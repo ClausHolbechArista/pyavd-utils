@@ -10,6 +10,11 @@ use crate::feedback::{Type, Violation};
 use crate::validatable::{ValidatableSequence, ValidatableValue};
 use crate::{context::Context, validation::Validation};
 
+type Trail = Vec<String>;
+type SeenItem<'a, V> = (Trail, &'a V);
+type PathMatches<'a, V> = Vec<SeenItem<'a, V>>;
+type SeenItems<'a, V> = HashMap<String, Vec<SeenItem<'a, V>>>;
+
 impl Validation for List {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
         if let Some(seq) = value.as_sequence() {
@@ -164,7 +169,7 @@ fn validate_unique_keys<'a, S: ValidatableSequence<'a>>(
 
     for unique_key in unique_keys {
         // Map from stringified value to list of (trail, value) pairs.
-        let mut seen_items: HashMap<String, Vec<(Vec<String>, &S::Value)>> = HashMap::new();
+        let mut seen_items: SeenItems<'_, S::Value> = HashMap::new();
 
         for (i, item) in items.iter().enumerate() {
             // Get the value at the unique_key path
@@ -199,10 +204,7 @@ fn validate_unique_keys<'a, S: ValidatableSequence<'a>>(
 }
 
 /// Get all values at a dot-separated path, returning (trail_suffix, value) pairs.
-fn get_values_at_path<'a, V: ValidatableValue>(
-    value: &'a V,
-    path: &str,
-) -> Vec<(Vec<String>, &'a V)> {
+fn get_values_at_path<'a, V: ValidatableValue>(value: &'a V, path: &str) -> PathMatches<'a, V> {
     let mut path_parts = path.split('.');
     let Some(first_key) = path_parts.next() else {
         return vec![(vec![], value)];

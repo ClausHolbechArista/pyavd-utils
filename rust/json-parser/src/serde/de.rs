@@ -6,7 +6,7 @@ use std::fmt;
 
 use serde::de::Error as _;
 use serde::de::{
-    self, Deserialize, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor,
+    self, Deserialize, DeserializeSeed, IntoDeserializer as _, MapAccess, SeqAccess, Visitor,
 };
 use serde::forward_to_deserialize_any;
 
@@ -23,6 +23,10 @@ pub struct DeError {
 }
 
 impl DeError {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Consumes the parse error into an owned serde error"
+    )]
     fn from_parse_error(error: ParseError) -> Self {
         Self {
             message: error.to_string(),
@@ -30,9 +34,9 @@ impl DeError {
         }
     }
 
-    fn custom_with_span(message: String, span: Span) -> Self {
+    fn custom_with_span(message: impl Into<String>, span: Span) -> Self {
         Self {
-            message,
+            message: message.into(),
             span: Some(span),
         }
     }
@@ -101,19 +105,22 @@ impl<'de> Deserializer<'de> {
             return Err(expected_token_error("number", &token));
         }
         let span = token.span;
-        let value = self.parse_number(&token)?;
+        let value = Self::parse_number(&token)?;
         Ok((value, span))
     }
 
-    fn parse_number(&mut self, token: &Token<'de>) -> Result<NumberValue<'de>, DeError> {
+    fn parse_number(token: &Token<'de>) -> Result<NumberValue<'de>, DeError> {
         let TokenKind::Number(raw) = &token.kind else {
             return Err(DeError::custom("expected number token"));
         };
         let text = raw.as_ref();
         if text.contains(['.', 'e', 'E']) {
-            return text.parse::<f64>().map(NumberValue::Float).map_err(|_| {
-                DeError::from_parse_error(ParseError::new(ErrorKind::InvalidNumber, token.span))
-            });
+            return text
+                .parse::<f64>()
+                .map(NumberValue::Float)
+                .map_err(|_error| {
+                    DeError::from_parse_error(ParseError::new(ErrorKind::InvalidNumber, token.span))
+                });
         }
         if let Ok(value) = text.parse::<i64>() {
             return Ok(NumberValue::I64(value));
@@ -132,6 +139,18 @@ impl<'de> Deserializer<'de> {
 
         Ok(NumberValue::BigIntStr(raw.clone()))
     }
+}
+
+fn integer_range_error(target: &'static str, span: Span) -> DeError {
+    DeError::custom_with_span(format!("integer out of range for {target}"), span)
+}
+
+fn expected_integer_error(span: Span) -> DeError {
+    DeError::custom_with_span("expected integer, found float", span)
+}
+
+fn float_range_error(span: Span) -> DeError {
+    DeError::custom_with_span("number out of range for f64", span)
 }
 
 fn token_kind_name(token: &Token<'_>) -> &'static str {
@@ -167,7 +186,7 @@ enum NumberValue<'de> {
     BigIntStr(std::borrow::Cow<'de, str>),
 }
 
-impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = DeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -180,18 +199,18 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             TokenKind::True => visitor.visit_bool(true),
             TokenKind::False => visitor.visit_bool(false),
             TokenKind::String(value) => match value {
-                std::borrow::Cow::Borrowed(value) => visitor.visit_borrowed_str(value),
-                std::borrow::Cow::Owned(value) => visitor.visit_string(value),
+                std::borrow::Cow::Borrowed(text) => visitor.visit_borrowed_str(text),
+                std::borrow::Cow::Owned(text) => visitor.visit_string(text),
             },
-            TokenKind::Number(_) => match self.parse_number(&token)? {
+            TokenKind::Number(_) => match Deserializer::parse_number(&token)? {
                 NumberValue::I64(value) => visitor.visit_i64(value),
                 NumberValue::U64(value) => visitor.visit_u64(value),
                 NumberValue::I128(value) => visitor.visit_i128(value),
                 NumberValue::U128(value) => visitor.visit_u128(value),
                 NumberValue::Float(value) => visitor.visit_f64(value),
                 NumberValue::BigIntStr(value) => match value {
-                    std::borrow::Cow::Borrowed(value) => visitor.visit_borrowed_str(value),
-                    std::borrow::Cow::Owned(value) => visitor.visit_string(value),
+                    std::borrow::Cow::Borrowed(text) => visitor.visit_borrowed_str(text),
+                    std::borrow::Cow::Owned(text) => visitor.visit_string(text),
                 },
             },
             TokenKind::LeftBracket => visitor.visit_seq(SeqAccessImpl {
@@ -215,10 +234,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             TokenKind::RightBrace
             | TokenKind::RightBracket
             | TokenKind::Colon
-            | TokenKind::Comma => Err(DeError::custom_with_span(
-                "unexpected token".to_string(),
-                token.span,
-            )),
+            | TokenKind::Comma => Err(DeError::custom_with_span("unexpected token", token.span)),
         }
     }
 
@@ -275,22 +291,16 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         match number {
             NumberValue::I64(value) => visitor.visit_i64(value),
             NumberValue::U64(value) => i64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for i64".to_string(), span))
-                .and_then(|value| visitor.visit_i64(value)),
+                .map_err(|_error| integer_range_error("i64", span))
+                .and_then(|converted| visitor.visit_i64(converted)),
             NumberValue::I128(value) => i64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for i64".to_string(), span))
-                .and_then(|value| visitor.visit_i64(value)),
+                .map_err(|_error| integer_range_error("i64", span))
+                .and_then(|converted| visitor.visit_i64(converted)),
             NumberValue::U128(value) => i64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for i64".to_string(), span))
-                .and_then(|value| visitor.visit_i64(value)),
-            NumberValue::Float(_) => Err(DeError::custom_with_span(
-                "expected integer, found float".to_string(),
-                span,
-            )),
-            NumberValue::BigIntStr(_) => Err(DeError::custom_with_span(
-                "integer out of range for i64".to_string(),
-                span,
-            )),
+                .map_err(|_error| integer_range_error("i64", span))
+                .and_then(|converted| visitor.visit_i64(converted)),
+            NumberValue::Float(_) => Err(expected_integer_error(span)),
+            NumberValue::BigIntStr(_) => Err(integer_range_error("i64", span)),
         }
     }
 
@@ -304,16 +314,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
             NumberValue::U64(value) => visitor.visit_i128(i128::from(value)),
             NumberValue::I128(value) => visitor.visit_i128(value),
             NumberValue::U128(value) => i128::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for i128".to_string(), span))
-                .and_then(|value| visitor.visit_i128(value)),
-            NumberValue::Float(_) => Err(DeError::custom_with_span(
-                "expected integer, found float".to_string(),
-                span,
-            )),
-            NumberValue::BigIntStr(_) => Err(DeError::custom_with_span(
-                "integer out of range for i128".to_string(),
-                span,
-            )),
+                .map_err(|_error| integer_range_error("i128", span))
+                .and_then(|converted| visitor.visit_i128(converted)),
+            NumberValue::Float(_) => Err(expected_integer_error(span)),
+            NumberValue::BigIntStr(_) => Err(integer_range_error("i128", span)),
         }
     }
 
@@ -345,23 +349,17 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let (number, span) = self.next_number_value()?;
         match number {
             NumberValue::I64(value) => u64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for u64".to_string(), span))
-                .and_then(|value| visitor.visit_u64(value)),
+                .map_err(|_error| integer_range_error("u64", span))
+                .and_then(|converted| visitor.visit_u64(converted)),
             NumberValue::U64(value) => visitor.visit_u64(value),
             NumberValue::I128(value) => u64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for u64".to_string(), span))
-                .and_then(|value| visitor.visit_u64(value)),
+                .map_err(|_error| integer_range_error("u64", span))
+                .and_then(|converted| visitor.visit_u64(converted)),
             NumberValue::U128(value) => u64::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for u64".to_string(), span))
-                .and_then(|value| visitor.visit_u64(value)),
-            NumberValue::Float(_) => Err(DeError::custom_with_span(
-                "expected integer, found float".to_string(),
-                span,
-            )),
-            NumberValue::BigIntStr(_) => Err(DeError::custom_with_span(
-                "integer out of range for u64".to_string(),
-                span,
-            )),
+                .map_err(|_error| integer_range_error("u64", span))
+                .and_then(|converted| visitor.visit_u64(converted)),
+            NumberValue::Float(_) => Err(expected_integer_error(span)),
+            NumberValue::BigIntStr(_) => Err(integer_range_error("u64", span)),
         }
     }
 
@@ -372,24 +370,23 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let (number, span) = self.next_number_value()?;
         match number {
             NumberValue::I64(value) => u128::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for u128".to_string(), span))
-                .and_then(|value| visitor.visit_u128(value)),
+                .map_err(|_error| integer_range_error("u128", span))
+                .and_then(|converted| visitor.visit_u128(converted)),
             NumberValue::U64(value) => visitor.visit_u128(u128::from(value)),
             NumberValue::I128(value) => u128::try_from(value)
-                .map_err(|_| DeError::custom_with_span("integer out of range for u128".to_string(), span))
-                .and_then(|value| visitor.visit_u128(value)),
+                .map_err(|_error| integer_range_error("u128", span))
+                .and_then(|converted| visitor.visit_u128(converted)),
             NumberValue::U128(value) => visitor.visit_u128(value),
-            NumberValue::Float(_) => Err(DeError::custom_with_span(
-                "expected integer, found float".to_string(),
-                span,
-            )),
-            NumberValue::BigIntStr(_) => Err(DeError::custom_with_span(
-                "integer out of range for u128".to_string(),
-                span,
-            )),
+            NumberValue::Float(_) => Err(expected_integer_error(span)),
+            NumberValue::BigIntStr(_) => Err(integer_range_error("u128", span)),
         }
     }
 
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "serde numeric visitors accept f64 coercions from JSON integers"
+    )]
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -397,6 +394,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         self.deserialize_f64(visitor)
     }
 
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "serde numeric visitors accept f64 coercions from JSON integers"
+    )]
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -413,13 +415,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 .parse::<f64>()
                 .ok()
                 .filter(|float| float.is_finite())
-                .map(|value| visitor.visit_f64(value))
-                .unwrap_or_else(|| {
-                    Err(DeError::custom_with_span(
-                        "number out of range for f64".to_string(),
-                        span,
-                    ))
-                }),
+                .map_or_else(
+                    || Err(float_range_error(span)),
+                    |float| visitor.visit_f64(float),
+                ),
         }
     }
 
@@ -430,8 +429,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let token = self.cursor.next();
         match token.kind {
             TokenKind::String(value) => match value {
-                std::borrow::Cow::Borrowed(value) => visitor.visit_borrowed_str(value),
-                std::borrow::Cow::Owned(value) => visitor.visit_string(value),
+                std::borrow::Cow::Borrowed(text) => visitor.visit_borrowed_str(text),
+                std::borrow::Cow::Owned(text) => visitor.visit_string(text),
             },
             _ => Err(expected_token_error("string", &token)),
         }
@@ -492,11 +491,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         }
     }
 
-    fn deserialize_tuple<V>(
-        self,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -549,8 +544,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let token = self.cursor.next();
         match token.kind {
             TokenKind::String(value) => match value {
-                std::borrow::Cow::Borrowed(value) => visitor.visit_borrowed_str(value),
-                std::borrow::Cow::Owned(value) => visitor.visit_string(value),
+                std::borrow::Cow::Borrowed(text) => visitor.visit_borrowed_str(text),
+                std::borrow::Cow::Owned(text) => visitor.visit_string(text),
             },
             _ => Err(expected_token_error("string", &token)),
         }
@@ -575,12 +570,17 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 tag: TokenTag::LeftBrace,
                 ..
             } => {
-                self.cursor.push_back(token);
-                visitor.visit_enum(MapAccessDeserializer::new(MapAccessImpl {
+                let _ = token;
+                let value = visitor.visit_enum(MapAccessDeserializer::new(MapAccessImpl {
                     de: self,
                     first: true,
                     finished: false,
-                }))
+                }))?;
+                let closing = self.cursor.next();
+                if closing.tag != TokenTag::RightBrace {
+                    return Err(expected_token_error("}", &closing));
+                }
+                Ok(value)
             }
             token => Err(expected_token_error("enum representation", &token)),
         }
@@ -679,9 +679,8 @@ impl<'de> MapAccess<'de> for MapAccessImpl<'_, 'de> {
         self.first = false;
 
         let key_token = self.de.cursor.next();
-        let key = match key_token.kind {
-            TokenKind::String(value) => value,
-            _ => return Err(expected_token_error("string", &key_token)),
+        let TokenKind::String(key) = key_token.kind else {
+            return Err(expected_token_error("string", &key_token));
         };
 
         let colon = self.de.cursor.next();

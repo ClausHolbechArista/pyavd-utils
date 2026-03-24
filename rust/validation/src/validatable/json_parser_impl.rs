@@ -115,10 +115,14 @@ impl<'input> ValidatableValue for Node<'input> {
             Value::Float(value) => FeedbackValue::Float(*value),
             Value::String(value) => FeedbackValue::Str(value.to_string()),
             Value::Sequence(items) => FeedbackValue::List(
-                items.iter().map(ValidatableValue::to_feedback_value).collect(),
+                items
+                    .iter()
+                    .map(ValidatableValue::to_feedback_value)
+                    .collect(),
             ),
             Value::Mapping(items) => FeedbackValue::Dict(
-                items.iter()
+                items
+                    .iter()
                     .filter_map(|(key, value)| {
                         key.as_str()
                             .map(|key_str| (key_str.into_owned(), value.to_feedback_value()))

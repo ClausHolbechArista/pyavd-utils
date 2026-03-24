@@ -170,7 +170,7 @@ impl SourceMap {
     #[must_use]
     pub fn position(&self, offset: usize) -> Position {
         let line_index = self.line_starts.partition_point(|start| *start <= offset) - 1;
-        let line_start = self.line_starts[line_index];
+        let line_start = self.line_starts.get(line_index).copied().unwrap_or(0);
         Position::new(line_index + 1, offset.saturating_sub(line_start) + 1)
     }
 }

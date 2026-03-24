@@ -2,16 +2,29 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-use std::{borrow::Cow, collections::BTreeMap};
+#![allow(clippy::indexing_slicing, reason = "panics are acceptable in tests")]
+#![allow(
+    clippy::expect_used,
+    reason = "expect() in tests provides precise failure messages for invariants"
+)]
+#![allow(
+    clippy::panic,
+    reason = "panic is acceptable for structural mismatches in tests"
+)]
+
+use std::borrow::Cow;
+
+#[cfg(feature = "serde")]
+use std::collections::BTreeMap;
 
 use crate::{ErrorKind, Integer, Node, Value, parse};
 
 #[test]
 fn parse_string_and_number_spans() {
-    let (node, errors) = parse(r#"{"name":"Alice","age":42}"#);
+    let (parsed_node_opt, errors) = parse(r#"{"name":"Alice","age":42}"#);
     assert!(errors.is_empty());
-    let node = node.expect("expected parsed node");
-    let Value::Mapping(pairs) = node.value else {
+    let parsed_node = parsed_node_opt.expect("expected parsed node");
+    let Value::Mapping(pairs) = parsed_node.value else {
         panic!("expected mapping");
     };
     assert_eq!(pairs.len(), 2);
@@ -23,7 +36,11 @@ fn parse_string_and_number_spans() {
 #[test]
 fn parse_recovery_missing_comma_in_array() {
     let (node, errors) = parse("[1 2, 3]");
-    assert!(errors.iter().any(|error| error.kind == ErrorKind::MissingComma));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.kind == ErrorKind::MissingComma)
+    );
     let Some(Node {
         value: Value::Sequence(items),
         ..
@@ -37,7 +54,11 @@ fn parse_recovery_missing_comma_in_array() {
 #[test]
 fn parse_recovery_missing_colon_in_object() {
     let (node, errors) = parse(r#"{"a" 1, "b": 2}"#);
-    assert!(errors.iter().any(|error| error.kind == ErrorKind::MissingColon));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.kind == ErrorKind::MissingColon)
+    );
     let Some(Node {
         value: Value::Mapping(pairs),
         ..
@@ -69,14 +90,14 @@ fn parse_top_level_invalid_input_returns_no_document() {
 #[test]
 fn parse_big_integer_preserves_text() {
     let value = "1234567890123456789012345678901234567890";
-    let (node, errors) = parse(value);
+    let (parsed_node_opt, errors) = parse(value);
     assert!(errors.is_empty());
-    let node = node.expect("expected node");
+    let parsed_node = parsed_node_opt.expect("expected node");
     assert_eq!(
-        node,
+        parsed_node,
         Node::new(
             Value::Int(Integer::BigIntStr(Cow::Borrowed(value))),
-            node.span
+            parsed_node.span
         )
     );
 }
@@ -113,9 +134,13 @@ fn serde_from_str_bool_type_mismatch_errors() {
 #[cfg(feature = "serde")]
 #[test]
 fn serde_from_str_seq_type_mismatch_errors() {
-    let error =
-        crate::serde::from_str::<Vec<i64>>(r#"{"a":1}"#).expect_err("expected sequence type mismatch");
-    assert!(error.to_string().contains("expected sequence, found mapping"));
+    let error = crate::serde::from_str::<Vec<i64>>(r#"{"a":1}"#)
+        .expect_err("expected sequence type mismatch");
+    assert!(
+        error
+            .to_string()
+            .contains("expected sequence, found mapping")
+    );
 }
 
 #[cfg(feature = "serde")]
@@ -134,6 +159,6 @@ fn serde_from_str_big_integer_preserves_text_in_any() {
             .expect("expected generic value deserialization");
     assert_eq!(
         value,
-        serde_json::Value::String("1234567890123456789012345678901234567890".to_string())
+        serde_json::Value::String("1234567890123456789012345678901234567890".to_owned())
     );
 }

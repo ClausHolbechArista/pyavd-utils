@@ -164,7 +164,9 @@ pub mod validation {
         let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
         let column = prefix
             .rsplit_once('\n')
-            .map_or(prefix.chars().count() + 1, |(_, tail)| tail.chars().count() + 1);
+            .map_or(prefix.chars().count() + 1, |(_, tail)| {
+                tail.chars().count() + 1
+            });
         (line, column)
     }
 
@@ -190,11 +192,12 @@ pub mod validation {
                     let suggestion = diagnostic
                         .suggestion
                         .as_ref()
-                        .map_or(String::new(), |suggestion| format!(" Suggestion: {suggestion}"));
+                        .map_or(String::new(), |suggestion| {
+                            format!(" Suggestion: {suggestion}")
+                        });
                     format!(
                         "- line {line}, column {column}: {}.{}",
-                        diagnostic.message,
-                        suggestion,
+                        diagnostic.message, suggestion,
                     )
                 })
                 .collect::<Vec<_>>()

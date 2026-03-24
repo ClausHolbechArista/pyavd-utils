@@ -42,11 +42,11 @@ impl<'input> Parser<'input> {
     #[inline]
     pub(crate) fn parse(&mut self) -> Option<Node<'input>> {
         let node = self.parse_value();
-        if node.is_some() {
-            if !matches!(self.cursor.peek_kind(), TokenKind::Eof) {
-                self.errors
-                    .push(ParseError::new(ErrorKind::TrailingContent, self.cursor.peek_span()));
-            }
+        if node.is_some() && !matches!(self.cursor.peek_kind(), TokenKind::Eof) {
+            self.errors.push(ParseError::new(
+                ErrorKind::TrailingContent,
+                self.cursor.peek_span(),
+            ));
         }
         node
     }
@@ -79,12 +79,8 @@ impl<'input> Parser<'input> {
                     .push(ParseError::new(ErrorKind::UnexpectedEof, token.span));
                 None
             }
-            TokenKind::Invalid => {
-                self.errors
-                    .push(ParseError::new(ErrorKind::InvalidValue, token.span));
-                None
-            }
-            TokenKind::RightBracket
+            TokenKind::Invalid
+            | TokenKind::RightBracket
             | TokenKind::RightBrace
             | TokenKind::Colon
             | TokenKind::Comma => {
@@ -197,6 +193,10 @@ impl<'input> Parser<'input> {
         Node::new(Value::Sequence(items), open_span.union(end_span))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Object parsing is an error-recovering state machine"
+    )]
     fn parse_object(&mut self, open_span: Span) -> Node<'input> {
         let mut pairs = Vec::new();
         let mut end_span = open_span;
@@ -219,11 +219,17 @@ impl<'input> Parser<'input> {
                             break;
                         }
                         TokenTag::String => {
-                            let TokenKind::String(value) = token.kind else {
-                                unreachable!("token tag reported String");
-                            };
-                            pending_key = Some(Node::new(Value::String(value), token.span));
-                            phase = ObjectPhase::AfterKey;
+                            if let TokenKind::String(value) = token.kind {
+                                pending_key = Some(Node::new(Value::String(value), token.span));
+                                phase = ObjectPhase::AfterKey;
+                            } else {
+                                self.errors.push(ParseError::new(
+                                    ErrorKind::ObjectKeyMustBeString,
+                                    token.span,
+                                ));
+                                self.synchronize_object();
+                                phase = ObjectPhase::BeforeKey;
+                            }
                         }
                         _ => {
                             self.errors.push(ParseError::new(
@@ -273,20 +279,18 @@ impl<'input> Parser<'input> {
                     }
                 }
                 ObjectPhase::BeforeValue => {
-                    let value_token = pending_value_token.take().unwrap_or_else(|| self.cursor.next());
+                    let value_token = pending_value_token
+                        .take()
+                        .unwrap_or_else(|| self.cursor.next());
                     match value_token.tag {
                         TokenTag::Comma => {
-                            self.errors.push(ParseError::new(
-                                ErrorKind::InvalidValue,
-                                value_token.span,
-                            ));
+                            self.errors
+                                .push(ParseError::new(ErrorKind::InvalidValue, value_token.span));
                             phase = ObjectPhase::BeforeKey;
                         }
                         TokenTag::RightBrace => {
-                            self.errors.push(ParseError::new(
-                                ErrorKind::InvalidValue,
-                                value_token.span,
-                            ));
+                            self.errors
+                                .push(ParseError::new(ErrorKind::InvalidValue, value_token.span));
                             end_span = value_token.span;
                             break;
                         }
@@ -295,7 +299,15 @@ impl<'input> Parser<'input> {
                             break;
                         }
                         _ => {
-                            let key = pending_key.take().expect("object value requires key");
+                            let Some(key) = pending_key.take() else {
+                                self.errors.push(ParseError::new(
+                                    ErrorKind::InvalidValue,
+                                    value_token.span,
+                                ));
+                                self.synchronize_object();
+                                phase = ObjectPhase::BeforeKey;
+                                continue;
+                            };
                             if let Some(value) = self.parse_value_token(value_token) {
                                 end_span = value.span;
                                 pairs.push((key, value));
@@ -403,33 +415,33 @@ fn is_valid_json_number(input: &str) -> bool {
         return false;
     }
 
-    if bytes[index] == b'-' {
+    if bytes.get(index) == Some(&b'-') {
         index += 1;
         if index >= bytes.len() {
             return false;
         }
     }
 
-    match bytes[index] {
-        b'0' => {
+    match bytes.get(index) {
+        Some(b'0') => {
             index += 1;
-            if index < bytes.len() && bytes[index].is_ascii_digit() {
+            if bytes.get(index).is_some_and(u8::is_ascii_digit) {
                 return false;
             }
         }
-        b'1'..=b'9' => {
+        Some(b'1'..=b'9') => {
             index += 1;
-            while index < bytes.len() && bytes[index].is_ascii_digit() {
+            while bytes.get(index).is_some_and(u8::is_ascii_digit) {
                 index += 1;
             }
         }
         _ => return false,
     }
 
-    if index < bytes.len() && bytes[index] == b'.' {
+    if bytes.get(index) == Some(&b'.') {
         index += 1;
         let fraction_start = index;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
             index += 1;
         }
         if fraction_start == index {
@@ -437,13 +449,13 @@ fn is_valid_json_number(input: &str) -> bool {
         }
     }
 
-    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+    if matches!(bytes.get(index), Some(b'e' | b'E')) {
         index += 1;
-        if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+        if matches!(bytes.get(index), Some(b'+' | b'-')) {
             index += 1;
         }
         let exponent_start = index;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
             index += 1;
         }
         if exponent_start == index {

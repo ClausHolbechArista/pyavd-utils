@@ -91,6 +91,10 @@ impl<'input> Lexer<'input> {
         self.input.as_bytes().get(self.pos).copied()
     }
 
+    #[allow(
+        clippy::string_slice,
+        reason = "lexer byte positions only advance across validated UTF-8 boundaries"
+    )]
     fn lex_string(&mut self) -> Token<'input> {
         let start = self.pos;
         self.pos += 1;
@@ -226,7 +230,8 @@ impl<'input> Lexer<'input> {
         }
 
         let save = self.pos;
-        if self.current_byte() == Some(b'\\') && self.input.as_bytes().get(self.pos + 1) == Some(&b'u')
+        if self.current_byte() == Some(b'\\')
+            && self.input.as_bytes().get(self.pos + 1) == Some(&b'u')
         {
             self.pos += 2;
             if let Some(low) = self.read_hex_u16()
@@ -309,10 +314,13 @@ impl<'input> Lexer<'input> {
             }
         }
 
-        Token::new(
-            TokenKind::Number(Cow::Borrowed(&self.input[start..self.pos])),
-            Span::from(start..self.pos),
-        )
+        #[allow(
+            clippy::string_slice,
+            reason = "number tokens are ASCII-only and lexer positions stay on UTF-8 boundaries"
+        )]
+        let value = Cow::Borrowed(&self.input[start..self.pos]);
+
+        Token::new(TokenKind::Number(value), Span::from(start..self.pos))
     }
 
     fn lex_literal(&mut self) -> Token<'input> {
@@ -321,14 +329,20 @@ impl<'input> Lexer<'input> {
             self.pos += 1;
         }
 
+        #[allow(
+            clippy::string_slice,
+            reason = "literal tokens are ASCII-only and lexer positions stay on UTF-8 boundaries"
+        )]
         let slice = &self.input[start..self.pos];
         let kind = match slice {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "null" => TokenKind::Null,
             _ => {
-                self.errors
-                    .push(ParseError::new(ErrorKind::InvalidLiteral, Span::from(start..self.pos)));
+                self.errors.push(ParseError::new(
+                    ErrorKind::InvalidLiteral,
+                    Span::from(start..self.pos),
+                ));
                 TokenKind::Invalid
             }
         };
@@ -352,10 +366,7 @@ impl<'input> TokenCursor<'input> {
 
     #[inline]
     pub(crate) fn peek(&mut self) -> &Token<'input> {
-        if self.peeked.is_none() {
-            self.peeked = Some(self.lexer.next_token());
-        }
-        self.peeked.as_ref().expect("peeked token must exist")
+        self.peeked.get_or_insert_with(|| self.lexer.next_token())
     }
 
     #[inline]
@@ -373,6 +384,7 @@ impl<'input> TokenCursor<'input> {
         self.peek().span
     }
 
+    #[cfg(feature = "serde")]
     #[inline]
     pub(crate) fn peek_kind_with_span(&mut self) -> (&TokenKind<'input>, Span) {
         let token = self.peek();
@@ -381,7 +393,9 @@ impl<'input> TokenCursor<'input> {
 
     #[inline]
     pub(crate) fn next(&mut self) -> Token<'input> {
-        self.peeked.take().unwrap_or_else(|| self.lexer.next_token())
+        self.peeked
+            .take()
+            .unwrap_or_else(|| self.lexer.next_token())
     }
 
     #[inline]
