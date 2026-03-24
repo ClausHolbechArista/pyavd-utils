@@ -126,12 +126,13 @@ pub struct Feedback<T: Clone + Debug + PartialEq + Serialize + Display> {
 }
 
 /// Input-wide diagnostic found while decoding or selecting the input.
-#[derive(Clone, Debug, PartialEq, Serialize, derive_more::From, derive_more::Display)]
+#[derive(Clone, Debug, PartialEq, Serialize, derive_more::Display)]
 pub enum InputDiagnostic {
     #[display("Invalid Schema name '{schema}'.")]
     InvalidSchema {
         schema: String,
     },
+    JsonParse(ParseDiagnostic),
     YamlParse(ParseDiagnostic),
 }
 
@@ -188,6 +189,15 @@ impl From<yaml_parser::Span> for SourceSpan {
     }
 }
 
+impl From<json_parser::Span> for SourceSpan {
+    fn from(value: json_parser::Span) -> Self {
+        Self {
+            start: value.start_usize(),
+            end: value.end_usize(),
+        }
+    }
+}
+
 /// Parse diagnostic reported while decoding structured input.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ParseDiagnostic {
@@ -201,6 +211,17 @@ impl From<yaml_parser::ParseError> for ParseDiagnostic {
     fn from(value: yaml_parser::ParseError) -> Self {
         Self {
             kind: ParseDiagnosticKind::YamlSyntax,
+            message: value.to_string(),
+            suggestion: value.suggestion().map(str::to_string),
+            span: value.span.into(),
+        }
+    }
+}
+
+impl From<json_parser::ParseError> for ParseDiagnostic {
+    fn from(value: json_parser::ParseError) -> Self {
+        Self {
+            kind: ParseDiagnosticKind::JsonSyntax,
             message: value.to_string(),
             suggestion: value.suggestion().map(str::to_string),
             span: value.span.into(),
@@ -225,6 +246,8 @@ impl Display for ParseDiagnostic {
 /// Parse diagnostic category.
 #[derive(Clone, Debug, PartialEq, Serialize, derive_more::Display)]
 pub enum ParseDiagnosticKind {
+    #[display("JSON syntax error")]
+    JsonSyntax,
     #[display("YAML syntax error")]
     YamlSyntax,
 }

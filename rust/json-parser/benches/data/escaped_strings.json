@@ -1,0 +1,12 @@
+{
+  "message": "Quoted \\\"text\\\" with newline\\nand tab\\tcharacters",
+  "path": "C:\\\\Program Files\\\\App\\\\data.json",
+  "unicode": "\\u0048\\u0065\\u006c\\u006c\\u006f \\u03c0 \\ud83d\\ude80",
+  "items": [
+    "line-1\\nline-2",
+    "tab\\tseparated",
+    "slash\\/escaped",
+    "quote\\\"escaped",
+    "backslash\\\\escaped"
+  ]
+}

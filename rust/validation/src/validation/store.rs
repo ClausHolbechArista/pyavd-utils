@@ -3,8 +3,8 @@
 // that can be found in the LICENSE file.
 
 use avdschema::{Schema, Store};
+use json_parser::{Node as JsonNode, parse as parse_json};
 use log::debug;
-use serde_json::Value;
 use yaml_parser::{Node, parse};
 
 use crate::{
@@ -57,7 +57,7 @@ pub trait StoreValidateInput<S> {
         json: &str,
         schema_name: S,
         configuration: Option<&Configuration>,
-    ) -> Result<InputValidationResult<Value>, StoreValidateError>;
+    ) -> Result<InputValidationResult<JsonNode<'static>>, StoreValidateError>;
 
     fn validate_yaml(
         &self,
@@ -117,19 +117,28 @@ impl StoreValidateInput<Schema> for Store {
         json: &str,
         schema_name: Schema,
         configuration: Option<&Configuration>,
-    ) -> Result<InputValidationResult<Value>, StoreValidateError> {
+    ) -> Result<InputValidationResult<JsonNode<'static>>, StoreValidateError> {
         debug!("Validating JSON");
-        let value: Value = serde_json::from_str(json)?;
+        let (value, parse_errors) = parse_json(json);
         debug!("Deserialization of JSON done");
-        let document = <Store as StoreValidate<Schema, Value>>::validate_value(
-            self,
-            &value,
-            schema_name,
-            configuration,
-        );
+        let input_diagnostics = parse_errors
+            .into_iter()
+            .map(|parse_error| InputDiagnostic::JsonParse(ParseDiagnostic::from(parse_error)))
+            .collect();
+        let document = value
+            .as_ref()
+            .map(|value| {
+                <Store as StoreValidate<Schema, JsonNode<'static>>>::validate_value(
+                    self,
+                    value,
+                    schema_name,
+                    configuration,
+                )
+            })
+            .unwrap_or_else(empty_validation_output);
         debug!("Validating JSON done");
         Ok(InputValidationResult {
-            input_diagnostics: Vec::new(),
+            input_diagnostics,
             document,
         })
     }
@@ -175,7 +184,7 @@ impl StoreValidateInput<&str> for Store {
         json: &str,
         schema_name: &str,
         configuration: Option<&Configuration>,
-    ) -> Result<InputValidationResult<Value>, StoreValidateError> {
+    ) -> Result<InputValidationResult<JsonNode<'static>>, StoreValidateError> {
         match Schema::try_from(schema_name) {
             Ok(schema_type) => <Store as StoreValidateInput<Schema>>::validate_json(
                 self,
@@ -338,6 +347,36 @@ mod tests {
     }
 
     #[test]
+    fn validate_json_parse_error_is_returned_as_feedback() {
+        let input = r#"{"foo" 123, "key3": {"some_key": "some_value"}}"#;
+        let store = get_test_store();
+        let result = store.validate_json(input, "avd_design", None);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+
+        assert!(output.input_diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                InputDiagnostic::JsonParse(parse_diagnostic)
+                    if parse_diagnostic.kind == ParseDiagnosticKind::JsonSyntax
+                        && parse_diagnostic.span.end >= parse_diagnostic.span.start
+            )
+        }));
+        assert_eq!(
+            output.document.result.errors,
+            vec![Feedback {
+                path: vec!["key3".into()].into(),
+                span: Some(SourceSpan { start: 20, end: 46 }),
+                issue: Violation::InvalidType {
+                    expected: Type::Str,
+                    found: Type::Dict
+                }
+                .into()
+            }]
+        );
+    }
+
+    #[test]
     fn validate_value_invalid_schema() {
         let input = serde_json::json!({});
         let store = get_test_store();
@@ -352,6 +391,21 @@ mod tests {
         let store = get_test_store();
         let result = store.validate_yaml(input, "avd_design", None).unwrap();
         let Some(feedback) = result.documents[0].result.errors.first() else {
+            panic!("expected validation feedback")
+        };
+        assert!(matches!(
+            &feedback.issue,
+            ValidationDiagnostic::Violation(_)
+        ));
+        assert!(feedback.span.is_some());
+    }
+
+    #[test]
+    fn json_feedback_span_is_populated() {
+        let input = r#"{"key3": {"some_key": "some_value"}}"#;
+        let store = get_test_store();
+        let result = store.validate_json(input, "avd_design", None).unwrap();
+        let Some(feedback) = result.document.result.errors.first() else {
             panic!("expected validation feedback")
         };
         assert!(matches!(

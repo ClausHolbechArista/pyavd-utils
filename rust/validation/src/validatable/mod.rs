@@ -5,7 +5,7 @@
 //! Traits for abstracting over different value representations.
 //!
 //! This module defines traits that allow validation code to work with both
-//! `serde_json::Value` and `yaml_parser::Node`, enabling reuse of validation
+//! `serde_json::Value`, `json_parser::Node`, and `yaml_parser::Node`, enabling reuse of validation
 //! logic across different parsers.
 //!
 //! # Coercion Behavior
@@ -213,6 +213,7 @@ pub trait ValidatableSequence<'a> {
 // === Implementations ===
 
 mod serde_json_impl;
+mod json_parser_impl;
 mod yaml_parser_impl;
 
 #[cfg(test)]

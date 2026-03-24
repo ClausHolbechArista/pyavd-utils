@@ -1,0 +1,28 @@
+{
+  "root": {
+    "a": {
+      "b": {
+        "c": {
+          "d": {
+            "e": {
+              "f": {
+                "g": {
+                  "h": {
+                    "enabled": true,
+                    "count": 128,
+                    "name": "deep-value",
+                    "items": [
+                      { "id": 1, "label": "one" },
+                      { "id": 2, "label": "two" },
+                      { "id": 3, "label": "three" }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

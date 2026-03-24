@@ -1,0 +1,86 @@
+{
+  "fabric_name": "dc1-fabric",
+  "tenants": [
+    {
+      "name": "Tenant-A",
+      "vrfs": [
+        {
+          "name": "BLUE",
+          "svis": [
+            { "id": 10, "name": "BLUE_USERS", "enabled": true, "ip_virtual_router_addresses": ["10.10.10.1/24"] },
+            { "id": 20, "name": "BLUE_SERVERS", "enabled": true, "ip_virtual_router_addresses": ["10.10.20.1/24"] },
+            { "id": 30, "name": "BLUE_STORAGE", "enabled": false, "ip_virtual_router_addresses": ["10.10.30.1/24"] }
+          ],
+          "static_routes": [
+            { "destination_address_prefix": "0.0.0.0/0", "gateway": "10.10.0.1" },
+            { "destination_address_prefix": "172.16.0.0/12", "gateway": "10.10.0.2" }
+          ]
+        },
+        {
+          "name": "GREEN",
+          "svis": [
+            { "id": 110, "name": "GREEN_USERS", "enabled": true, "ip_virtual_router_addresses": ["10.110.10.1/24"] },
+            { "id": 120, "name": "GREEN_SERVERS", "enabled": true, "ip_virtual_router_addresses": ["10.110.20.1/24"] }
+          ],
+          "static_routes": [
+            { "destination_address_prefix": "0.0.0.0/0", "gateway": "10.110.0.1" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Tenant-B",
+      "vrfs": [
+        {
+          "name": "RED",
+          "svis": [
+            { "id": 210, "name": "RED_USERS", "enabled": true, "ip_virtual_router_addresses": ["10.210.10.1/24"] },
+            { "id": 220, "name": "RED_SERVERS", "enabled": false, "ip_virtual_router_addresses": ["10.210.20.1/24"] }
+          ],
+          "bgp_peers": [
+            { "ip_address": "192.0.2.10", "remote_as": 65110, "description": "WAN_EDGE_1" },
+            { "ip_address": "192.0.2.11", "remote_as": 65111, "description": "WAN_EDGE_2" }
+          ]
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "leaf1",
+      "mgmt_ip": "192.168.0.11/24",
+      "loopbacks": { "loopback0": "10.255.0.11/32", "loopback1": "10.255.1.11/32" },
+      "uplinks": [
+        { "interface": "Ethernet1", "peer": "spine1", "peer_interface": "Ethernet1" },
+        { "interface": "Ethernet2", "peer": "spine2", "peer_interface": "Ethernet1" }
+      ]
+    },
+    {
+      "name": "leaf2",
+      "mgmt_ip": "192.168.0.12/24",
+      "loopbacks": { "loopback0": "10.255.0.12/32", "loopback1": "10.255.1.12/32" },
+      "uplinks": [
+        { "interface": "Ethernet1", "peer": "spine1", "peer_interface": "Ethernet2" },
+        { "interface": "Ethernet2", "peer": "spine2", "peer_interface": "Ethernet2" }
+      ]
+    },
+    {
+      "name": "spine1",
+      "mgmt_ip": "192.168.0.21/24",
+      "bgp_as": 65001,
+      "router_id": "10.255.255.21"
+    },
+    {
+      "name": "spine2",
+      "mgmt_ip": "192.168.0.22/24",
+      "bgp_as": 65002,
+      "router_id": "10.255.255.22"
+    }
+  ],
+  "metadata": {
+    "owner": "network-automation",
+    "generated_by": "benchmark-suite",
+    "revision": 42,
+    "notes": "Representative nested object payload for parse and serde benchmarks"
+  }
+}

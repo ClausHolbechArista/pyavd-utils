@@ -158,6 +158,60 @@ pub mod validation {
         }
     }
 
+    fn line_and_column_for_offset(input: &str, offset: usize) -> (usize, usize) {
+        let offset = offset.min(input.len());
+        let prefix = &input[..offset];
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let column = prefix
+            .rsplit_once('\n')
+            .map_or(prefix.chars().count() + 1, |(_, tail)| tail.chars().count() + 1);
+        (line, column)
+    }
+
+    fn input_diagnostics_to_pyerr(
+        input: &str,
+        diagnostics: &[validation::feedback::InputDiagnostic],
+    ) -> pyo3::PyErr {
+        use validation::feedback::InputDiagnostic;
+
+        let json_parse_diagnostics: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                InputDiagnostic::JsonParse(parse_diagnostic) => Some(parse_diagnostic),
+                _ => None,
+            })
+            .collect();
+
+        if json_parse_diagnostics.len() == diagnostics.len() {
+            let details = json_parse_diagnostics
+                .into_iter()
+                .map(|diagnostic| {
+                    let (line, column) = line_and_column_for_offset(input, diagnostic.span.start);
+                    let suggestion = diagnostic
+                        .suggestion
+                        .as_ref()
+                        .map_or(String::new(), |suggestion| format!(" Suggestion: {suggestion}"));
+                    format!(
+                        "- line {line}, column {column}: {}.{}",
+                        diagnostic.message,
+                        suggestion,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return PyRuntimeError::new_err(format!("Invalid JSON in data:\n{details}"));
+        }
+
+        let details = diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        PyRuntimeError::new_err(format!(
+            "Unexpected input diagnostics in pyvalidation:\n{details}"
+        ))
+    }
+
     #[pyclass(frozen, get_all)]
     pub struct ValidatedDataResult {
         pub validation_result: ValidationResult,
@@ -202,19 +256,16 @@ pub mod validation {
         configuration: Option<Configuration>,
     ) -> PyResult<ValidationResult> {
         let config = configuration.map(Into::into);
-        get_store()?
+        let output = get_store()?
             .validate_json(data_as_json, schema_name, config.as_ref())
-            .map_err(|err| PyRuntimeError::new_err(format!("Invalid JSON in data: {err}")))
-            .and_then(|output| {
-                if !output.input_diagnostics.is_empty() {
-                    return Err(PyRuntimeError::new_err(
-                        "Unexpected input diagnostics in pyvalidation. \
-                         This API currently validates already-parsed JSON data."
-                            .to_string(),
-                    ));
-                }
-                output.document.result.try_into()
-            })
+            .map_err(|err| PyRuntimeError::new_err(format!("Invalid JSON in data: {err}")))?;
+        if !output.input_diagnostics.is_empty() {
+            return Err(input_diagnostics_to_pyerr(
+                data_as_json,
+                &output.input_diagnostics,
+            ));
+        }
+        output.document.result.try_into()
     }
 
     #[pyfunction]
@@ -416,10 +467,10 @@ mod tests {
                     .call_method("validate_json", args, Some(&kwargs))
                     .unwrap_err()
             };
-            assert_eq!(
-                err.value(py).to_string(),
-                "Invalid JSON in data: expected value at line 1 column 1"
-            )
+            let message = err.value(py).to_string();
+            assert!(message.starts_with("Invalid JSON in data:\n- line 1, column 1:"));
+            assert!(message.contains("invalid character"));
+            assert!(message.contains("invalid value"));
         });
     }
 
