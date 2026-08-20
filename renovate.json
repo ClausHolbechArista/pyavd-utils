@@ -83,7 +83,7 @@
       "commitMessagePrefix": "CI: "
     },
     {
-      "description": "pre-commit Python additional_dependencies only; hook rev updates stay with pre-commit.ci.",
+      "description": "pre-commit Python additional_dependencies.",
       "matchManagers": [
         "pre-commit"
       ],
