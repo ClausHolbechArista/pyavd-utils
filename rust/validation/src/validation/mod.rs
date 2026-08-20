@@ -12,6 +12,7 @@ pub(crate) mod str;
 pub(crate) mod valid_values;
 
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::Type;
 use crate::feedback::Violation;
 use crate::validatable::ValidatableValue;
@@ -41,22 +42,47 @@ pub trait Validation {
         ctx: &mut Context,
         expected: Type,
     ) -> Option<V::Coerced> {
-        if value.is_null() && !ctx.configuration.restrict_null_values {
-            // Null is allowed when not restricted
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_null())
-        } else {
-            ctx.add_error_for(
-                value,
-                Violation::InvalidType {
-                    expected,
-                    found: value.value_type(),
-                },
-            );
-            None
-        }
+        handle_invalid_type(value, ctx, &ValidationState::default(), expected)
     }
+}
+
+pub(crate) fn handle_invalid_type<V: ValidatableValue>(
+    value: &V,
+    ctx: &mut Context,
+    state: &ValidationState,
+    expected: Type,
+) -> Option<V::Coerced> {
+    if value.is_null() && !ctx.configuration.restrict_null_values {
+        // Null is allowed when not restricted
+        ctx.configuration
+            .return_coerced_data
+            .then(|| value.coerce_null())
+    } else {
+        ctx.add_error_for(
+            state,
+            value,
+            Violation::InvalidType {
+                expected,
+                found: value.value_type(),
+            },
+        );
+        None
+    }
+}
+
+/// Outcome of validating one node without recursively validating its children.
+///
+/// Container validators use this to separate node validation from traversal:
+/// a caller may traverse [`Valid`](Self::Valid), preserve an accepted
+/// [`Null`](Self::Null), or stop after [`Invalid`](Self::Invalid). Validation
+/// diagnostics are added to the [`Context`] before `Invalid` is returned.
+pub(crate) enum NodeValidation<T> {
+    /// The node has the expected type and may be traversed through this view.
+    Valid(T),
+    /// Null is accepted because `restrict_null_values` is disabled.
+    Null,
+    /// The node is invalid and the relevant diagnostic has already been added.
+    Invalid,
 }
 
 #[cfg(test)]

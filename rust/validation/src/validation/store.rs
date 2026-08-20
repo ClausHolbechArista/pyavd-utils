@@ -8,13 +8,13 @@ use serde_json::Value;
 use yaml_parser::Node;
 use yaml_parser::parse;
 
-use super::Validation as _;
 use crate::context::Configuration;
 use crate::context::Context;
 use crate::context::ValidationResult;
 use crate::feedback::InputDiagnostic;
 use crate::feedback::ParseDiagnostic;
 use crate::validatable::ValidatableValue;
+use crate::validation::Validation as _;
 
 #[derive(Debug, Default)]
 /// Result of validation for a single parsed value or YAML document.

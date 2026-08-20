@@ -27,33 +27,33 @@ pub struct Context<'a> {
     pub configuration: Configuration,
     pub store: &'a Store,
     pub result: ValidationResult,
-    pub(crate) state: State,
 }
 
 impl<'a> Context<'a> {
-    pub fn new(store: &'a Store, configuration: Option<&'a Configuration>) -> Self {
+    pub fn new(store: &'a Store, configuration: Option<&Configuration>) -> Self {
         Self {
             configuration: configuration.cloned().unwrap_or_default(),
             store,
             result: Default::default(),
-            state: Default::default(),
         }
     }
     pub(crate) fn add_error_for<V: ValidatableValue>(
         &mut self,
+        state: &ValidationState,
         value: &V,
         error: impl Into<ErrorIssue>,
     ) {
-        self.add_error_with_span(value.source_span(), error);
+        self.add_error_with_span(state, value.source_span(), error);
     }
 
     pub(crate) fn add_error_with_span(
         &mut self,
+        state: &ValidationState,
         span: Option<SourceSpan>,
         error: impl Into<ErrorIssue>,
     ) {
         self.result.errors.push(Feedback {
-            path: self.state.path.clone(),
+            path: state.path.clone(),
             span,
             issue: error.into(),
         });
@@ -61,11 +61,12 @@ impl<'a> Context<'a> {
 
     pub(crate) fn add_warning_with_span(
         &mut self,
+        state: &ValidationState,
         span: Option<SourceSpan>,
         warning: impl Into<WarningIssue>,
     ) {
         self.result.warnings.push(Feedback {
-            path: self.state.path.clone(),
+            path: state.path.clone(),
             span,
             issue: warning.into(),
         });
@@ -73,11 +74,12 @@ impl<'a> Context<'a> {
 
     pub(crate) fn add_info_for<V: ValidatableValue>(
         &mut self,
+        state: &ValidationState,
         value: &V,
         info: impl Into<InfoIssue>,
     ) {
         self.result.infos.push(Feedback {
-            path: self.state.path.clone(),
+            path: state.path.clone(),
             span: value.source_span(),
             issue: info.into(),
         });
@@ -85,11 +87,13 @@ impl<'a> Context<'a> {
 
     pub(crate) fn add_coercion_for<V: ValidatableValue>(
         &mut self,
+        state: &ValidationState,
         value: &V,
         made: impl Into<Value>,
     ) {
         if self.configuration.return_coercion_infos {
             self.add_info_for(
+                state,
                 value,
                 CoercionNote {
                     found: value.to_feedback_value(),
@@ -101,12 +105,14 @@ impl<'a> Context<'a> {
 
     pub(crate) fn add_string_lowered_for<V: ValidatableValue>(
         &mut self,
+        state: &ValidationState,
         value: &V,
         found: &str,
         made: &str,
     ) {
         if self.configuration.return_coercion_infos {
             self.add_info_for(
+                state,
                 value,
                 StringLoweredNote {
                     found: found.to_owned(),
@@ -121,6 +127,7 @@ impl<'a> Context<'a> {
         B: ValidatableValue,
     >(
         &mut self,
+        state: &ValidationState,
         value_a: &A,
         trail_a: &[String],
         value_b: &B,
@@ -128,10 +135,10 @@ impl<'a> Context<'a> {
     ) {
         // Violation from A's perspective (A sees B as duplicate)
         let violation_a = Feedback {
-            path: self.state.path.clone_with_slice(trail_a),
+            path: state.path.clone_with_slice(trail_a),
             span: value_a.source_span(),
             issue: Violation::ValueNotUnique {
-                other_path: self.state.path.clone_with_slice(trail_b),
+                other_path: state.path.clone_with_slice(trail_b),
                 other_span: value_b.source_span(),
             }
             .into(),
@@ -139,10 +146,10 @@ impl<'a> Context<'a> {
 
         // Violation from B's perspective (B sees A as duplicate)
         let violation_b = Feedback {
-            path: self.state.path.clone_with_slice(trail_b),
+            path: state.path.clone_with_slice(trail_b),
             span: value_b.source_span(),
             issue: Violation::ValueNotUnique {
-                other_path: self.state.path.clone_with_slice(trail_a),
+                other_path: state.path.clone_with_slice(trail_a),
                 other_span: value_a.source_span(),
             }
             .into(),
@@ -152,13 +159,26 @@ impl<'a> Context<'a> {
     }
 }
 
-/// Validation state set on Context during validation.
+/// Short-lived traversal state passed alongside [`Context`] during validation.
+///
+/// Context owns the shared store, configuration, and accumulated result. This
+/// state carries only the location and mode of the node currently being
+/// validated, so a traverser can derive child state without mutating Context.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct State {
+pub(crate) struct ValidationState {
     /// Don't validate required keys.
     /// Used for `structured_config` where we overload other config, and only the final result should be validated for required keys.
     pub(crate) relaxed_validation: bool,
     pub(crate) path: Path,
+}
+
+impl ValidationState {
+    pub(crate) fn with_path(path: Path) -> Self {
+        Self {
+            path,
+            ..Default::default()
+        }
+    }
 }
 
 /// Configuration to use during validation.

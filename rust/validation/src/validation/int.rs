@@ -7,44 +7,56 @@ use avdschema::int::Int;
 use avdschema::resolve_ref;
 
 use super::Validation;
+use super::handle_invalid_type;
 use super::valid_values::ValidateValidValues as _;
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::Type;
 use crate::feedback::Violation;
 use crate::validatable::ValidatableValue;
 
 impl Validation for Int {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
-        if let Some(ref_result) = validate_ref(self, value, ctx) {
-            return ref_result;
-        }
+        validate(self, value, ctx, &mut ValidationState::default())
+    }
+}
 
-        // Lenient type check - accept anything coercible to int (e.g., "123" -> 123)
-        if let Some(integer) = value.as_i64() {
-            // Emit coercion info if the original value was not an int
-            if !value.is_int() {
-                ctx.add_coercion_for(value, integer);
-            }
-            self.valid_values.validate(value, &integer, ctx);
-            validate_min(self, value, &integer, ctx);
-            validate_max(self, value, &integer, ctx);
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_int(integer))
-        } else if value.is_int() {
-            ctx.add_error_for(
-                value,
-                Violation::IntegerOutOfRange {
-                    found: value.as_str().map_or_else(
-                        || value.to_feedback_value().to_string(),
-                        std::borrow::Cow::into_owned,
-                    ),
-                },
-            );
-            None
-        } else {
-            Self::handle_invalid_type(value, ctx, Type::Int)
+pub(crate) fn validate<V: ValidatableValue>(
+    schema: &Int,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
+        return ref_result;
+    }
+
+    // Lenient type check - accept anything coercible to int (e.g., "123" -> 123)
+    if let Some(integer) = value.as_i64() {
+        // Emit coercion info if the original value was not an int
+        if !value.is_int() {
+            ctx.add_coercion_for(state, value, integer);
         }
+        schema.valid_values.validate(value, &integer, ctx, state);
+        validate_min(schema, value, &integer, ctx, state);
+        validate_max(schema, value, &integer, ctx, state);
+        ctx.configuration
+            .return_coerced_data
+            .then(|| value.coerce_int(integer))
+    } else if value.is_int() {
+        ctx.add_error_for(
+            state,
+            value,
+            Violation::IntegerOutOfRange {
+                found: value.as_str().map_or_else(
+                    || value.to_feedback_value().to_string(),
+                    std::borrow::Cow::into_owned,
+                ),
+            },
+        );
+        None
+    } else {
+        handle_invalid_type(value, ctx, state, Type::Int)
     }
 }
 
@@ -53,20 +65,28 @@ fn validate_ref<V: ValidatableValue>(
     schema: &Int,
     value: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Option<V::Coerced>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Int(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(ref_schema.validate(value, ctx));
+        return Some(validate(ref_schema, value, ctx, state));
     }
     None
 }
 
-fn validate_min<V: ValidatableValue>(schema: &Int, value: &V, input: &i64, ctx: &mut Context) {
+fn validate_min<V: ValidatableValue>(
+    schema: &Int,
+    value: &V,
+    input: &i64,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
     if let Some(min) = schema.min
         && min > *input
     {
         ctx.add_error_for(
+            state,
             value,
             Violation::ValueBelowMinimum {
                 minimum: min,
@@ -76,11 +96,18 @@ fn validate_min<V: ValidatableValue>(schema: &Int, value: &V, input: &i64, ctx: 
     }
 }
 
-fn validate_max<V: ValidatableValue>(schema: &Int, value: &V, input: &i64, ctx: &mut Context) {
+fn validate_max<V: ValidatableValue>(
+    schema: &Int,
+    value: &V,
+    input: &i64,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
     if let Some(max) = schema.max
         && max < *input
     {
         ctx.add_error_for(
+            state,
             value,
             Violation::ValueAboveMaximum {
                 maximum: max,

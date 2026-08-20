@@ -9,8 +9,11 @@ use avdschema::dict::DictKeyMatch;
 use avdschema::resolve_ref;
 use ordermap::OrderMap;
 
+use super::NodeValidation;
 use super::Validation;
+use super::any;
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::Deprecated;
 use crate::feedback::IgnoredEosConfigKey;
 use crate::feedback::Removed;
@@ -35,39 +38,88 @@ const EOS_CLI_CONFIG_GEN_ROLE_KEYS: [&str; 8] = [
 
 impl Validation for Dict {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
-        if let Some(ref_result) = validate_ref(self, value, ctx) {
-            return ref_result;
-        }
-
-        if let Some(mapping) = value.as_mapping() {
-            validate_duplicate_keys(&mapping, ctx);
-            let coerced_items = validate_keys(self, &mapping, ctx);
-            validate_required_keys(self, value, &mapping, ctx);
-            coerced_items.map(|items| value.coerce_mapping(items))
-        } else if value.is_null() && !ctx.configuration.restrict_null_values {
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_null())
-        } else {
-            ctx.add_error_for(
-                value,
-                Violation::InvalidType {
-                    expected: Type::Dict,
-                    found: value.value_type(),
-                },
-            );
-            None
-        }
+        validate(self, value, ctx, &mut ValidationState::default())
     }
 }
 
-fn validate_duplicate_keys<'a, M: ValidatableMapping<'a>>(input: &M, ctx: &mut Context) {
-    for duplicate_key in input.duplicate_keys() {
-        ctx.state.path.push(duplicate_key.key.to_owned());
-        for span in duplicate_key.spans {
-            ctx.add_error_with_span(span, Violation::DuplicateKey());
+pub(crate) fn validate<V: ValidatableValue>(
+    schema: &Dict,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
+        return ref_result;
+    }
+
+    let mapping = match validate_node(value, ctx, state) {
+        NodeValidation::Valid(mapping) => mapping,
+        NodeValidation::Null => {
+            return ctx
+                .configuration
+                .return_coerced_data
+                .then(|| value.coerce_null());
         }
-        ctx.state.path.pop();
+        NodeValidation::Invalid => return None,
+    };
+    let coerced_items = validate_keys(schema, &mapping, ctx, state);
+    finish_node_validation(schema, value, &mapping, ctx, state);
+    coerced_items.map(|items| value.coerce_mapping(items))
+}
+
+/// Validate the mapping node before recursively validating its values.
+///
+/// Required keys are checked by [`finish_node_validation`] to preserve the
+/// existing diagnostic order around eager child traversal.
+///
+/// Returns [`NodeValidation::Valid`] with a mapping view when traversal may
+/// continue, [`NodeValidation::Null`] for an accepted null, or
+/// [`NodeValidation::Invalid`] after recording an invalid-type diagnostic.
+pub(crate) fn validate_node<'a, V: ValidatableValue>(
+    value: &'a V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> NodeValidation<V::Mapping<'a>> {
+    if let Some(mapping) = value.as_mapping() {
+        validate_duplicate_keys(&mapping, ctx, state);
+        NodeValidation::Valid(mapping)
+    } else if value.is_null() && !ctx.configuration.restrict_null_values {
+        NodeValidation::Null
+    } else {
+        ctx.add_error_for(
+            state,
+            value,
+            Violation::InvalidType {
+                expected: Type::Dict,
+                found: value.value_type(),
+            },
+        );
+        NodeValidation::Invalid
+    }
+}
+
+/// Complete mapping-node validation after recursive child validation.
+pub(crate) fn finish_node_validation<'a, M: ValidatableMapping<'a>>(
+    schema: &Dict,
+    value: &M::Value,
+    input: &M,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
+    validate_required_keys(schema, value, input, ctx, state);
+}
+
+fn validate_duplicate_keys<'a, M: ValidatableMapping<'a>>(
+    input: &M,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) {
+    for duplicate_key in input.duplicate_keys() {
+        state.path.push(duplicate_key.key.to_owned());
+        for span in duplicate_key.spans {
+            ctx.add_error_with_span(state, span, Violation::DuplicateKey());
+        }
+        state.path.pop();
     }
 }
 
@@ -78,17 +130,18 @@ fn validate_ref<V: ValidatableValue>(
     schema: &Dict,
     value: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Option<V::Coerced>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Dict(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
         // Handle relaxed validation here, since the places we use it is also where we skip resolving the $ref before validation.
-        let previous_relaxed_validation = ctx.state.relaxed_validation;
+        let previous_relaxed_validation = state.relaxed_validation;
         if schema.relaxed_validation.unwrap_or_default() {
-            ctx.state.relaxed_validation = true;
+            state.relaxed_validation = true;
         }
-        let result = ref_schema.validate(value, ctx);
-        ctx.state.relaxed_validation = previous_relaxed_validation;
+        let result = validate(ref_schema, value, ctx, state);
+        state.relaxed_validation = previous_relaxed_validation;
         return Some(result);
     }
     None
@@ -100,6 +153,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
     schema: &Dict,
     input: &M,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Vec<<M::Value as ValidatableValue>::CoercedMappingItem>> {
     let mut coerced_items = ctx.configuration.return_coerced_data.then(Vec::new);
 
@@ -116,7 +170,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
 
     // When at the root level, if warn_eos_config_keys is enabled, get the keys from the eos_config schema.
     let eos_config_keys: Option<&OrderMap<String, AnySchema>> = {
-        if ctx.state.path.is_empty()
+        if state.path.is_empty()
             && ctx.configuration.warn_eos_config_keys
             && let Ok(AnySchema::Dict(eos_config_schema)) = ctx.store.get("eos_config")
         {
@@ -137,7 +191,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
         let path_key: &str = schema_key.as_deref().unwrap_or(&display_key);
         let input_value = pair.value();
         let key_span = pair.key_span();
-        ctx.state.path.push(path_key.to_owned());
+        state.path.push(path_key.to_owned());
 
         // Only string keys participate in AVD schema key matching.
         // YAML allows non-string mapping keys, so handle those separately:
@@ -145,12 +199,12 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
         // the original key shape and spans in coerced output.
         let Some(input_schema_key) = schema_key.as_deref() else {
             if !schema.allow_other_keys.unwrap_or_default() {
-                ctx.add_error_with_span(key_span, Violation::UnexpectedKey());
+                ctx.add_error_with_span(state, key_span, Violation::UnexpectedKey());
             }
             if let Some(ref mut items) = coerced_items {
                 items.push(pair.coerced_item(input_value.clone_to_coerced()));
             }
-            ctx.state.path.pop();
+            state.path.pop();
             continue;
         };
 
@@ -163,6 +217,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
                 key_span,
                 input,
                 ctx,
+                state,
             ),
             DictKeyMatch::Dynamic(dynamic_key_info) => validate_matched_key(
                 input_schema_key,
@@ -171,6 +226,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
                 key_span,
                 input,
                 ctx,
+                state,
             ),
             // Unmatched underscore keys are deliberately ignored by validation,
             // but still preserved in coerced output.
@@ -179,14 +235,14 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
             // The EOS config warning only applies to allowed string keys.
             DictKeyMatch::UnknownKey => {
                 if !schema.allow_other_keys.unwrap_or_default() {
-                    ctx.add_error_with_span(key_span, Violation::UnexpectedKey());
+                    ctx.add_error_with_span(state, key_span, Violation::UnexpectedKey());
                 } else if let Some(eos_config_keys) = &eos_config_keys
                     && eos_config_keys.contains_key(input_schema_key)
                     && !EOS_CLI_CONFIG_GEN_ROLE_KEYS.contains(&input_schema_key)
                 {
                     // Key is not in avd_design schema but is in eos_config_keys
                     // and allow_other_keys is true - emit a warning that it will be ignored
-                    ctx.add_warning_with_span(key_span, IgnoredEosConfigKey {});
+                    ctx.add_warning_with_span(state, key_span, IgnoredEosConfigKey {});
                 }
                 None
             }
@@ -198,7 +254,7 @@ fn validate_keys<'a, M: ValidatableMapping<'a>>(
             );
         }
 
-        ctx.state.path.pop();
+        state.path.pop();
     }
 
     coerced_items
@@ -211,12 +267,13 @@ fn validate_matched_key<'a, M: ValidatableMapping<'a>>(
     key_span: Option<crate::feedback::SourceSpan>,
     input: &M,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<<M::Value as ValidatableValue>::Coerced> {
-    if check_deprecation(input_schema_key, key_schema, key_span, input, ctx) {
+    if check_deprecation(input_schema_key, key_schema, key_span, input, ctx, state) {
         // Removed keys skip further validation but preserve the original value in the coerced output.
         None
     } else {
-        key_schema.validate(input_value, ctx)
+        any::validate(key_schema, input_value, ctx, state)
     }
 }
 
@@ -225,17 +282,22 @@ fn validate_required_keys<'a, M: ValidatableMapping<'a>>(
     value: &M::Value,
     input: &M,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     // Don't validate required keys if we are below a dict with relaxed validation or if we are at the root level.
-    if ctx.state.relaxed_validation
-        || (ctx.configuration.ignore_required_keys_on_root_dict && ctx.state.path.is_empty())
+    if state.relaxed_validation
+        || (ctx.configuration.ignore_required_keys_on_root_dict && state.path.is_empty())
     {
         return;
     }
     if let Some(keys) = &schema.keys {
         for (key, key_schema) in keys {
             if key_schema.is_required() && !input.contains_key(key) {
-                ctx.add_error_for(value, Violation::MissingRequiredKey { key: key.clone() });
+                ctx.add_error_for(
+                    state,
+                    value,
+                    Violation::MissingRequiredKey { key: key.clone() },
+                );
             }
         }
     }
@@ -248,20 +310,23 @@ fn check_deprecation<'a, M: ValidatableMapping<'a>>(
     key_span: Option<crate::feedback::SourceSpan>,
     parent_dict_input: &M,
     ctx: &mut Context,
+    state: &ValidationState,
 ) -> bool {
     if let Some(deprecation) = key_schema.deprecation()
         && deprecation.warning
     {
         if deprecation.removed.unwrap_or_default() {
             ctx.add_error_with_span(
+                state,
                 key_span,
-                Violation::Removed(Removed::from_schema(&ctx.state.path, deprecation)),
+                Violation::Removed(Removed::from_schema(&state.path, deprecation)),
             );
             true
         } else {
             ctx.add_warning_with_span(
+                state,
                 key_span.clone(),
-                Deprecated::from_schema(&ctx.state.path, deprecation),
+                Deprecated::from_schema(&state.path, deprecation),
             );
             if !deprecation.allow_with_new_key.unwrap_or_default()
                 && let Some(schema_new_key) = deprecation.new_key.as_ref()
@@ -283,6 +348,7 @@ fn check_deprecation<'a, M: ValidatableMapping<'a>>(
                         };
                         if exists {
                             ctx.add_error_with_span(
+                                state,
                                 key_span.clone(),
                                 Violation::DeprecatedConflict {
                                     other_path: new_key.into(),
@@ -1523,8 +1589,8 @@ mod tests {
         };
         let mut ctx = Context::new(&store, Some(&configuration));
         // Using a deeper path and see that we still get the error even though we relax for the root dict.
-        ctx.state.path.push("deeper".into());
-        let _ = schema.validate(&input, &mut ctx);
+        let mut state = ValidationState::with_path("deeper".into());
+        let _ = validate(&schema, &input, &mut ctx, &mut state);
         assert!(ctx.result.infos.is_empty());
         assert_eq!(
             ctx.result.errors,

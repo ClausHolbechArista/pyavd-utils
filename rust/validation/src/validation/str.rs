@@ -7,8 +7,10 @@ use avdschema::resolve_ref;
 use avdschema::str::Str;
 
 use super::Validation;
+use super::handle_invalid_type;
 use super::valid_values::ValidateValidValues as _;
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::ErrorIssue;
 use crate::feedback::Type;
 use crate::feedback::Violation;
@@ -16,29 +18,38 @@ use crate::validatable::ValidatableValue;
 
 impl Validation for Str {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
-        if let Some(ref_result) = validate_ref(self, value, ctx) {
-            return ref_result;
-        }
+        validate(self, value, ctx, &mut ValidationState::default())
+    }
+}
 
-        // Lenient type check - accept anything coercible to string
-        if let Some(string) = value.as_str() {
-            let input = string.into_owned();
-            // Emit coercion info if original was not a string
-            if !value.is_str() {
-                ctx.add_coercion_for(value, input.as_str());
-            }
-            // Apply convert_to_lower_case if specified
-            let input = convert_to_lower_case(self, value, input, ctx);
-            self.valid_values.validate(value, &input, ctx);
-            validate_min_length(self, value, &input, ctx);
-            validate_max_length(self, value, &input, ctx);
-            validate_pattern(self, value, &input, ctx);
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_str(input))
-        } else {
-            Self::handle_invalid_type(value, ctx, Type::Str)
+pub(crate) fn validate<V: ValidatableValue>(
+    schema: &Str,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
+        return ref_result;
+    }
+
+    // Lenient type check - accept anything coercible to string
+    if let Some(string) = value.as_str() {
+        let input = string.into_owned();
+        // Emit coercion info if original was not a string
+        if !value.is_str() {
+            ctx.add_coercion_for(state, value, input.as_str());
         }
+        // Apply convert_to_lower_case if specified
+        let input = convert_to_lower_case(schema, value, input, ctx, state);
+        schema.valid_values.validate(value, &input, ctx, state);
+        validate_min_length(schema, value, &input, ctx, state);
+        validate_max_length(schema, value, &input, ctx, state);
+        validate_pattern(schema, value, &input, ctx, state);
+        ctx.configuration
+            .return_coerced_data
+            .then(|| value.coerce_str(input))
+    } else {
+        handle_invalid_type(value, ctx, state, Type::Str)
     }
 }
 
@@ -47,6 +58,7 @@ fn convert_to_lower_case<V: ValidatableValue>(
     value: &V,
     input: String,
     ctx: &mut Context,
+    state: &ValidationState,
 ) -> String {
     if !schema.convert_to_lower_case.unwrap_or_default() {
         return input;
@@ -55,7 +67,7 @@ fn convert_to_lower_case<V: ValidatableValue>(
     if lower == input {
         input
     } else {
-        ctx.add_string_lowered_for(value, &input, &lower);
+        ctx.add_string_lowered_for(state, value, &input, &lower);
         lower
     }
 }
@@ -65,11 +77,12 @@ fn validate_ref<V: ValidatableValue>(
     schema: &Str,
     value: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Option<V::Coerced>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Str(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(ref_schema.validate(value, ctx));
+        return Some(validate(ref_schema, value, ctx, state));
     }
     None
 }
@@ -79,11 +92,13 @@ fn validate_min_length<V: ValidatableValue>(
     value: &V,
     input: &str,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     if let Some(min_length) = schema.min_length {
         let length = input.chars().count() as u64;
         if min_length > length {
             ctx.add_error_for(
+                state,
                 value,
                 Violation::LengthBelowMinimum {
                     minimum: min_length,
@@ -99,11 +114,13 @@ fn validate_max_length<V: ValidatableValue>(
     value: &V,
     input: &str,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     if let Some(max_length) = schema.max_length {
         let length = input.chars().count() as u64;
         if max_length < length {
             ctx.add_error_for(
+                state,
                 value,
                 Violation::LengthAboveMaximum {
                     maximum: max_length,
@@ -114,10 +131,17 @@ fn validate_max_length<V: ValidatableValue>(
     }
 }
 
-fn validate_pattern<V: ValidatableValue>(schema: &Str, value: &V, input: &str, ctx: &mut Context) {
+fn validate_pattern<V: ValidatableValue>(
+    schema: &Str,
+    value: &V,
+    input: &str,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
     if let Some(pattern) = &schema.pattern {
         match pattern.get_compiled_pattern() {
             Err(err) => ctx.add_error_for(
+                state,
                 value,
                 ErrorIssue::InternalError {
                     message: format!("Schema contains an invalid regex pattern '{pattern}': {err}"),
@@ -126,6 +150,7 @@ fn validate_pattern<V: ValidatableValue>(schema: &Str, value: &V, input: &str, c
             Ok(regex_pattern) => match regex_pattern.is_match(input) {
                 Ok(true) => {}
                 Ok(false) => ctx.add_error_for(
+                    state,
                     value,
                     Violation::NotMatchingPattern {
                         pattern: pattern.to_string(),
@@ -133,6 +158,7 @@ fn validate_pattern<V: ValidatableValue>(schema: &Str, value: &V, input: &str, c
                     },
                 ),
                 Err(err) => ctx.add_error_for(
+                    state,
                     value,
                     ErrorIssue::InternalError {
                         message: err.to_string(),

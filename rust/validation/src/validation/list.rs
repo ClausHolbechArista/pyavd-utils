@@ -9,40 +9,85 @@ use avdschema::list::List;
 use avdschema::resolve_ref;
 
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::Type;
 use crate::feedback::Violation;
 use crate::validatable::ValidatableSequence;
 use crate::validatable::ValidatableValue;
+use crate::validation::NodeValidation;
 use crate::validation::Validation;
+use crate::validation::any;
 
 impl Validation for List {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
-        if let Some(ref_result) = validate_ref(self, value, ctx) {
-            return ref_result;
-        }
-
-        if let Some(seq) = value.as_sequence() {
-            validate_min_length(self, value, &seq, ctx);
-            validate_max_length(self, value, &seq, ctx);
-            validate_unique_keys(self, &seq, ctx);
-            // Validate items and optionally collect coerced results
-            let coerced_items = validate_items(self, &seq, ctx);
-            coerced_items.map(|items| value.coerce_sequence(items))
-        } else if value.is_null() && !ctx.configuration.restrict_null_values {
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_null())
-        } else {
-            ctx.add_error_for(
-                value,
-                Violation::InvalidType {
-                    expected: Type::List,
-                    found: value.value_type(),
-                },
-            );
-            None
-        }
+        validate(self, value, ctx, &mut ValidationState::default())
     }
+}
+
+pub(crate) fn validate<V: ValidatableValue>(
+    schema: &List,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
+        return ref_result;
+    }
+
+    let sequence = match validate_node(schema, value, ctx, state) {
+        NodeValidation::Valid(sequence) => sequence,
+        NodeValidation::Null => {
+            return ctx
+                .configuration
+                .return_coerced_data
+                .then(|| value.coerce_null());
+        }
+        NodeValidation::Invalid => return None,
+    };
+    // Validate items and optionally collect coerced results
+    let coerced_items = validate_items(schema, &sequence, ctx, state);
+    coerced_items.map(|items| value.coerce_sequence(items))
+}
+
+/// Validate list-wide constraints without recursively validating item bodies.
+///
+/// Returns [`NodeValidation::Valid`] with a sequence view when traversal may
+/// continue, [`NodeValidation::Null`] for an accepted null, or
+/// [`NodeValidation::Invalid`] after recording an invalid-type diagnostic.
+pub(crate) fn validate_node<'a, V: ValidatableValue>(
+    schema: &List,
+    value: &'a V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> NodeValidation<V::Sequence<'a>> {
+    if let Some(sequence) = value.as_sequence() {
+        validate_min_length(schema, value, &sequence, ctx, state);
+        validate_max_length(schema, value, &sequence, ctx, state);
+        validate_unique_keys(schema, &sequence, ctx, state);
+        NodeValidation::Valid(sequence)
+    } else if value.is_null() && !ctx.configuration.restrict_null_values {
+        NodeValidation::Null
+    } else {
+        ctx.add_error_for(
+            state,
+            value,
+            Violation::InvalidType {
+                expected: Type::List,
+                found: value.value_type(),
+            },
+        );
+        NodeValidation::Invalid
+    }
+}
+
+/// Validate list-item structure before recursively validating the item body.
+pub(crate) fn validate_item_node<V: ValidatableValue>(
+    schema: &List,
+    item: &V,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
+    validate_item_primary_key(schema, item, ctx, state);
 }
 
 /// Validate against a referenced schema (for unresolved $ref ending with #).
@@ -50,11 +95,12 @@ fn validate_ref<V: ValidatableValue>(
     schema: &List,
     value: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Option<V::Coerced>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::List(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(ref_schema.validate(value, ctx));
+        return Some(validate(ref_schema, value, ctx, state));
     }
     None
 }
@@ -65,6 +111,7 @@ fn validate_items<'a, S: ValidatableSequence<'a>>(
     schema: &List,
     input: &S,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Vec<<S::Value as ValidatableValue>::Coerced>> {
     let mut coerced = ctx
         .configuration
@@ -72,15 +119,15 @@ fn validate_items<'a, S: ValidatableSequence<'a>>(
         .then(|| Vec::with_capacity(input.len()));
 
     for (i, item) in input.iter().enumerate() {
-        ctx.state.path.push(i.to_string());
-        validate_item_primary_key(schema, item, ctx);
+        state.path.push(i.to_string());
+        validate_item_node(schema, item, ctx, state);
         if let Some(ref mut items) = coerced {
-            let coerced_item = validate_item_schema(schema, item, ctx);
+            let coerced_item = validate_item_schema(schema, item, ctx, state);
             items.push(coerced_item);
         } else {
-            validate_item_schema_only(schema, item, ctx);
+            validate_item_schema_only(schema, item, ctx, state);
         }
-        ctx.state.path.pop();
+        state.path.pop();
     }
     coerced
 }
@@ -89,21 +136,25 @@ fn validate_item_schema<V: ValidatableValue>(
     schema: &List,
     item: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> V::Coerced {
     if let Some(item_schema) = &schema.items {
         // validate() returns Option, but we know return_coerced_data is true here
-        item_schema
-            .validate(item, ctx)
-            .unwrap_or_else(|| item.clone_to_coerced())
+        any::validate(item_schema, item, ctx, state).unwrap_or_else(|| item.clone_to_coerced())
     } else {
         // No item schema - preserve the value as-is
         item.clone_to_coerced()
     }
 }
 
-fn validate_item_schema_only<V: ValidatableValue>(schema: &List, item: &V, ctx: &mut Context) {
+fn validate_item_schema_only<V: ValidatableValue>(
+    schema: &List,
+    item: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) {
     if let Some(item_schema) = &schema.items {
-        let _ = item_schema.validate(item, ctx);
+        let _ = any::validate(item_schema, item, ctx, state);
     }
 }
 
@@ -112,11 +163,13 @@ fn validate_min_length<'a, V: ValidatableValue, S: ValidatableSequence<'a>>(
     value: &V,
     input: &S,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     if let Some(min_length) = schema.min_length {
         let length = input.len() as u64;
         if min_length > length {
             ctx.add_error_for(
+                state,
                 value,
                 Violation::LengthBelowMinimum {
                     minimum: min_length,
@@ -132,11 +185,13 @@ fn validate_max_length<'a, V: ValidatableValue, S: ValidatableSequence<'a>>(
     value: &V,
     input: &S,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     if let Some(max_length) = schema.max_length {
         let length = input.len() as u64;
         if max_length < length {
             ctx.add_error_for(
+                state,
                 value,
                 Violation::LengthAboveMaximum {
                     maximum: max_length,
@@ -147,11 +202,17 @@ fn validate_max_length<'a, V: ValidatableValue, S: ValidatableSequence<'a>>(
     }
 }
 
-fn validate_item_primary_key<V: ValidatableValue>(schema: &List, item: &V, ctx: &mut Context) {
+fn validate_item_primary_key<V: ValidatableValue>(
+    schema: &List,
+    item: &V,
+    ctx: &mut Context,
+    state: &ValidationState,
+) {
     if let Some(primary_key) = &schema.primary_key
         && item.get(primary_key).is_none_or(ValidatableValue::is_null)
     {
         ctx.add_error_for(
+            state,
             item,
             Violation::MissingRequiredKey {
                 key: primary_key.to_owned(),
@@ -164,6 +225,7 @@ fn validate_unique_keys<'a, S: ValidatableSequence<'a>>(
     schema: &List,
     items: &S,
     ctx: &mut Context,
+    state: &ValidationState,
 ) {
     type SeenItem<'a, T> = (Vec<String>, &'a T);
 
@@ -195,6 +257,7 @@ fn validate_unique_keys<'a, S: ValidatableSequence<'a>>(
                         // Add violations for all duplicates in both directions.
                         for (seen_item_trail, seen_value) in seen_item_trails.iter() {
                             ctx.add_duplicate_value_violation_pair_for(
+                                state,
                                 *seen_value,
                                 seen_item_trail,
                                 value,

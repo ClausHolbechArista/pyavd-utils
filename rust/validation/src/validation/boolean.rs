@@ -7,24 +7,35 @@ use avdschema::boolean::Bool;
 use avdschema::resolve_ref;
 
 use super::Validation;
+use super::handle_invalid_type;
 use crate::context::Context;
+use crate::context::ValidationState;
 use crate::feedback::Type;
 use crate::validatable::ValidatableValue;
 
 impl Validation for Bool {
     fn validate<V: ValidatableValue>(&self, value: &V, ctx: &mut Context) -> Option<V::Coerced> {
-        if let Some(maybe_coerced) = validate_ref(self, value, ctx) {
-            return maybe_coerced;
-        }
+        validate(self, value, ctx, &mut ValidationState::default())
+    }
+}
 
-        if let Some(boolean) = value.as_bool() {
-            // Bool schema has no constraints to validate beyond type checking
-            ctx.configuration
-                .return_coerced_data
-                .then(|| value.coerce_bool(boolean))
-        } else {
-            Self::handle_invalid_type(value, ctx, Type::Bool)
-        }
+pub(crate) fn validate<V: ValidatableValue>(
+    schema: &Bool,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    if let Some(maybe_coerced) = validate_ref(schema, value, ctx, state) {
+        return maybe_coerced;
+    }
+
+    if let Some(boolean) = value.as_bool() {
+        // Bool schema has no constraints to validate beyond type checking
+        ctx.configuration
+            .return_coerced_data
+            .then(|| value.coerce_bool(boolean))
+    } else {
+        handle_invalid_type(value, ctx, state, Type::Bool)
     }
 }
 
@@ -33,11 +44,12 @@ fn validate_ref<V: ValidatableValue>(
     schema: &Bool,
     value: &V,
     ctx: &mut Context,
+    state: &mut ValidationState,
 ) -> Option<Option<V::Coerced>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Bool(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(ref_schema.validate(value, ctx));
+        return Some(validate(ref_schema, value, ctx, state));
     }
     None
 }

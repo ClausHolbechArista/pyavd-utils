@@ -23,6 +23,7 @@
 #![deny(unused_crate_dependencies)]
 
 mod context;
+mod cursor;
 pub mod feedback;
 mod validatable;
 mod validation;
@@ -30,6 +31,13 @@ mod validation;
 pub use self::context::Configuration;
 pub use self::context::Context;
 pub use self::context::ValidationResult;
+pub use self::cursor::ValidationCursor;
+pub use self::cursor::ValidationSequence;
+pub use self::validatable::MappingDuplicateKey;
+pub use self::validatable::ValidatableMapping;
+pub use self::validatable::ValidatableMappingPair;
+pub use self::validatable::ValidatableSequence;
+pub use self::validatable::ValidatableValue;
 pub use self::validation::Validation;
 pub use self::validation::store::InputValidationResult;
 pub use self::validation::store::StoreValidate;
