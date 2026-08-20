@@ -90,7 +90,8 @@
       "matchDepTypes": [
         "pre-commit-python"
       ],
-      "commitMessagePrefix": "ci:",
+      "semanticCommitType": "ci",
+      "commitMessagePrefix": "CI: "
       "rangeStrategy": "bump"
     }
   ]
