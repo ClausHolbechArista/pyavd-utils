@@ -42,21 +42,30 @@ pub trait Validation {
         ctx: &mut Context,
         expected: Type,
     ) -> Option<V::Coerced> {
-        handle_invalid_type(value, ctx, &ValidationState::default(), expected)
+        match invalid_type::<std::convert::Infallible, _>(
+            value,
+            ctx,
+            &ValidationState::default(),
+            expected,
+        ) {
+            NodeValidation::Null => ctx
+                .configuration
+                .return_coerced_data
+                .then(|| value.coerce_null()),
+            NodeValidation::Invalid => None,
+            NodeValidation::Valid(never) => match never {},
+        }
     }
 }
 
-pub(crate) fn handle_invalid_type<V: ValidatableValue>(
+pub(crate) fn invalid_type<T, V: ValidatableValue>(
     value: &V,
     ctx: &mut Context,
     state: &ValidationState,
     expected: Type,
-) -> Option<V::Coerced> {
+) -> NodeValidation<T> {
     if value.is_null() && !ctx.configuration.restrict_null_values {
-        // Null is allowed when not restricted
-        ctx.configuration
-            .return_coerced_data
-            .then(|| value.coerce_null())
+        NodeValidation::Null
     } else {
         ctx.add_error_for(
             state,
@@ -66,7 +75,7 @@ pub(crate) fn handle_invalid_type<V: ValidatableValue>(
                 found: value.value_type(),
             },
         );
-        None
+        NodeValidation::Invalid
     }
 }
 
@@ -76,13 +85,25 @@ pub(crate) fn handle_invalid_type<V: ValidatableValue>(
 /// a caller may traverse [`Valid`](Self::Valid), preserve an accepted
 /// [`Null`](Self::Null), or stop after [`Invalid`](Self::Invalid). Validation
 /// diagnostics are added to the [`Context`] before `Invalid` is returned.
-pub(crate) enum NodeValidation<T> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodeValidation<T> {
     /// The node has the expected type and may be traversed through this view.
     Valid(T),
     /// Null is accepted because `restrict_null_values` is disabled.
     Null,
     /// The node is invalid and the relevant diagnostic has already been added.
     Invalid,
+}
+
+impl<T> NodeValidation<T> {
+    #[must_use]
+    pub fn map<U, F: FnOnce(T) -> U>(self, map: F) -> NodeValidation<U> {
+        match self {
+            Self::Valid(value) => NodeValidation::Valid(map(value)),
+            Self::Null => NodeValidation::Null,
+            Self::Invalid => NodeValidation::Invalid,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@ use avdschema::any::AnySchema;
 use avdschema::boolean::Bool;
 use avdschema::resolve_ref;
 
+use super::NodeValidation;
 use super::Validation;
-use super::handle_invalid_type;
+use super::invalid_type;
 use crate::context::Context;
 use crate::context::ValidationState;
 use crate::feedback::Type;
@@ -25,17 +26,33 @@ pub(crate) fn validate<V: ValidatableValue>(
     ctx: &mut Context,
     state: &mut ValidationState,
 ) -> Option<V::Coerced> {
-    if let Some(maybe_coerced) = validate_ref(schema, value, ctx, state) {
-        return maybe_coerced;
+    match validate_node(schema, value, ctx, state) {
+        NodeValidation::Valid(boolean) => ctx
+            .configuration
+            .return_coerced_data
+            .then(|| value.coerce_bool(boolean)),
+        NodeValidation::Null => ctx
+            .configuration
+            .return_coerced_data
+            .then(|| value.coerce_null()),
+        NodeValidation::Invalid => None,
     }
+}
 
+pub(crate) fn validate_node<V: ValidatableValue>(
+    schema: &Bool,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> NodeValidation<bool> {
+    if let Some(result) = validate_ref(schema, value, ctx, state) {
+        return result;
+    }
     if let Some(boolean) = value.as_bool() {
         // Bool schema has no constraints to validate beyond type checking
-        ctx.configuration
-            .return_coerced_data
-            .then(|| value.coerce_bool(boolean))
+        NodeValidation::Valid(boolean)
     } else {
-        handle_invalid_type(value, ctx, state, Type::Bool)
+        invalid_type(value, ctx, state, Type::Bool)
     }
 }
 
@@ -45,11 +62,11 @@ fn validate_ref<V: ValidatableValue>(
     value: &V,
     ctx: &mut Context,
     state: &mut ValidationState,
-) -> Option<Option<V::Coerced>> {
+) -> Option<NodeValidation<bool>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Bool(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(validate(ref_schema, value, ctx, state));
+        return Some(validate_node(ref_schema, value, ctx, state));
     }
     None
 }

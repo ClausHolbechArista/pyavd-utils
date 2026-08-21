@@ -6,8 +6,9 @@ use avdschema::any::AnySchema;
 use avdschema::int::Int;
 use avdschema::resolve_ref;
 
+use super::NodeValidation;
 use super::Validation;
-use super::handle_invalid_type;
+use super::invalid_type;
 use super::valid_values::ValidateValidValues as _;
 use crate::context::Context;
 use crate::context::ValidationState;
@@ -27,10 +28,28 @@ pub(crate) fn validate<V: ValidatableValue>(
     ctx: &mut Context,
     state: &mut ValidationState,
 ) -> Option<V::Coerced> {
-    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
-        return ref_result;
+    match validate_node(schema, value, ctx, state) {
+        NodeValidation::Valid(integer) => ctx
+            .configuration
+            .return_coerced_data
+            .then(|| value.coerce_int(integer)),
+        NodeValidation::Null => ctx
+            .configuration
+            .return_coerced_data
+            .then(|| value.coerce_null()),
+        NodeValidation::Invalid => None,
     }
+}
 
+pub(crate) fn validate_node<V: ValidatableValue>(
+    schema: &Int,
+    value: &V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> NodeValidation<i64> {
+    if let Some(result) = validate_ref(schema, value, ctx, state) {
+        return result;
+    }
     // Lenient type check - accept anything coercible to int (e.g., "123" -> 123)
     if let Some(integer) = value.as_i64() {
         // Emit coercion info if the original value was not an int
@@ -40,9 +59,7 @@ pub(crate) fn validate<V: ValidatableValue>(
         schema.valid_values.validate(value, &integer, ctx, state);
         validate_min(schema, value, &integer, ctx, state);
         validate_max(schema, value, &integer, ctx, state);
-        ctx.configuration
-            .return_coerced_data
-            .then(|| value.coerce_int(integer))
+        NodeValidation::Valid(integer)
     } else if value.is_int() {
         ctx.add_error_for(
             state,
@@ -54,9 +71,9 @@ pub(crate) fn validate<V: ValidatableValue>(
                 ),
             },
         );
-        None
+        NodeValidation::Invalid
     } else {
-        handle_invalid_type(value, ctx, state, Type::Int)
+        invalid_type(value, ctx, state, Type::Int)
     }
 }
 
@@ -66,11 +83,11 @@ fn validate_ref<V: ValidatableValue>(
     value: &V,
     ctx: &mut Context,
     state: &mut ValidationState,
-) -> Option<Option<V::Coerced>> {
+) -> Option<NodeValidation<i64>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Int(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(validate(ref_schema, value, ctx, state));
+        return Some(validate_node(ref_schema, value, ctx, state));
     }
     None
 }

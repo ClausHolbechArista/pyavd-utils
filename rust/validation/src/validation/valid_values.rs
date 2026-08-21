@@ -9,7 +9,7 @@ use crate::context::ValidationState;
 use crate::feedback::Violation;
 use crate::validatable::ValidatableValue;
 
-pub(crate) trait ValidateValidValues<T> {
+pub(crate) trait ValidateValidValues<T: ?Sized> {
     /// Validate that the value is one of the valid values.
     fn validate<V: ValidatableValue>(
         &self,
@@ -43,16 +43,16 @@ impl ValidateValidValues<i64> for ValidValues<i64> {
     }
 }
 
-impl ValidateValidValues<String> for ValidValues<String> {
+impl ValidateValidValues<str> for ValidValues<String> {
     fn validate<V: ValidatableValue>(
         &self,
         source_value: &V,
-        input: &String,
+        input: &str,
         ctx: &mut Context,
         state: &ValidationState,
     ) {
         if let Some(valid_values) = self.valid_values.as_ref()
-            && !valid_values.contains(input)
+            && !valid_values.iter().any(|value| value == input)
         {
             ctx.add_error_for(
                 state,

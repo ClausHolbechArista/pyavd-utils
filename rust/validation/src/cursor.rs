@@ -6,7 +6,10 @@
 //!
 //! Unlike [`crate::StoreValidate`], cursors do not recursively walk a value.
 //! The caller selects fields and list items and therefore defines the validated
-//! projection. Scalar validation still uses the regular schema validators.
+//! projection. Scalar validation returns normalized primitives without building
+//! a coerced output tree.
+
+use std::borrow::Cow;
 
 use avdschema::any::AnySchema;
 use avdschema::dict::DictKeyMatch;
@@ -19,9 +22,81 @@ use crate::validatable::ValidatableMapping as _;
 use crate::validatable::ValidatableSequence as _;
 use crate::validatable::ValidatableValue;
 use crate::validation::NodeValidation;
-use crate::validation::any;
+use crate::validation::boolean;
 use crate::validation::dict;
+use crate::validation::int;
 use crate::validation::list;
+use crate::validation::str;
+
+/// Normalized value returned after validating a scalar schema node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScalarValue<'data> {
+    Bool(bool),
+    Int(i64),
+    Str(Cow<'data, str>),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use avdschema::any::AnySchema;
+    use avdschema::int::Int;
+    use avdschema::str::Str;
+    use serde_json::json;
+
+    use super::*;
+    use crate::validation::test_utils::get_test_store;
+
+    #[test]
+    fn scalar_returns_borrowed_string_without_coerced_output_enabled() {
+        let schema = AnySchema::Str(Str::default());
+        let input = json!("leaf1");
+        let store = get_test_store();
+        let mut context = Context::new(&store, None);
+
+        let result = ValidationCursor::new(&input, &schema).scalar(&mut context);
+
+        assert_eq!(
+            result,
+            Some(NodeValidation::Valid(ScalarValue::Str(Cow::Borrowed(
+                "leaf1"
+            ))))
+        );
+    }
+
+    #[test]
+    fn scalar_keeps_already_lowercase_value_borrowed() {
+        let schema = AnySchema::Str(Str {
+            convert_to_lower_case: Some(true),
+            ..Default::default()
+        });
+        let input = json!("leaf1");
+        let store = get_test_store();
+        let mut context = Context::new(&store, None);
+
+        let result = ValidationCursor::new(&input, &schema).scalar(&mut context);
+
+        assert_eq!(
+            result,
+            Some(NodeValidation::Valid(ScalarValue::Str(Cow::Borrowed(
+                "leaf1"
+            ))))
+        );
+    }
+
+    #[test]
+    fn scalar_returns_normalized_integer_without_coerced_output_enabled() {
+        let schema = AnySchema::Int(Int::default());
+        let input = json!("42");
+        let store = get_test_store();
+        let mut context = Context::new(&store, None);
+
+        let result = ValidationCursor::new(&input, &schema).scalar(&mut context);
+
+        assert_eq!(result, Some(NodeValidation::Valid(ScalarValue::Int(42))));
+    }
+}
 
 /// A raw value paired with the schema and path for that exact value.
 #[derive(Clone)]
@@ -132,17 +207,25 @@ impl<'data, 'schema, V: ValidatableValue> ValidationCursor<'data, 'schema, V> {
         })
     }
 
-    /// Run the existing validator for one requested scalar value.
-    pub fn scalar(&self, context: &mut Context<'_>) -> Option<V::Coerced> {
-        if matches!(self.schema, AnySchema::Dict(_) | AnySchema::List(_)) {
-            return None;
+    /// Validate one requested scalar and return its normalized primitive.
+    ///
+    /// This result is independent of `Configuration::return_coerced_data`.
+    /// The caller decides whether and how to materialize an output value.
+    pub fn scalar(&self, context: &mut Context<'_>) -> Option<NodeValidation<ScalarValue<'data>>> {
+        let mut state = self.validation_state();
+        match self.schema {
+            AnySchema::Bool(schema) => Some(
+                boolean::validate_node(schema, self.value, context, &mut state)
+                    .map(ScalarValue::Bool),
+            ),
+            AnySchema::Int(schema) => Some(
+                int::validate_node(schema, self.value, context, &mut state).map(ScalarValue::Int),
+            ),
+            AnySchema::Str(schema) => Some(
+                str::validate_node(schema, self.value, context, &mut state).map(ScalarValue::Str),
+            ),
+            AnySchema::Dict(_) | AnySchema::List(_) => None,
         }
-        any::validate(
-            self.schema,
-            self.value,
-            context,
-            &mut self.validation_state(),
-        )
     }
 
     fn validation_state(&self) -> ValidationState {

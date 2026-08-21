@@ -2,12 +2,15 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
+use std::borrow::Cow;
+
 use avdschema::any::AnySchema;
 use avdschema::resolve_ref;
 use avdschema::str::Str;
 
+use super::NodeValidation;
 use super::Validation;
-use super::handle_invalid_type;
+use super::invalid_type;
 use super::valid_values::ValidateValidValues as _;
 use crate::context::Context;
 use crate::context::ValidationState;
@@ -28,61 +31,77 @@ pub(crate) fn validate<V: ValidatableValue>(
     ctx: &mut Context,
     state: &mut ValidationState,
 ) -> Option<V::Coerced> {
-    if let Some(ref_result) = validate_ref(schema, value, ctx, state) {
-        return ref_result;
-    }
-
-    // Lenient type check - accept anything coercible to string
-    if let Some(string) = value.as_str() {
-        let input = string.into_owned();
-        // Emit coercion info if original was not a string
-        if !value.is_str() {
-            ctx.add_coercion_for(state, value, input.as_str());
-        }
-        // Apply convert_to_lower_case if specified
-        let input = convert_to_lower_case(schema, value, input, ctx, state);
-        schema.valid_values.validate(value, &input, ctx, state);
-        validate_min_length(schema, value, &input, ctx, state);
-        validate_max_length(schema, value, &input, ctx, state);
-        validate_pattern(schema, value, &input, ctx, state);
-        ctx.configuration
+    match validate_node(schema, value, ctx, state) {
+        NodeValidation::Valid(string) => ctx
+            .configuration
             .return_coerced_data
-            .then(|| value.coerce_str(input))
-    } else {
-        handle_invalid_type(value, ctx, state, Type::Str)
+            .then(|| value.coerce_str(string.into_owned())),
+        NodeValidation::Null => ctx
+            .configuration
+            .return_coerced_data
+            .then(|| value.coerce_null()),
+        NodeValidation::Invalid => None,
     }
 }
 
-fn convert_to_lower_case<V: ValidatableValue>(
+pub(crate) fn validate_node<'a, V: ValidatableValue>(
+    schema: &Str,
+    value: &'a V,
+    ctx: &mut Context,
+    state: &mut ValidationState,
+) -> NodeValidation<Cow<'a, str>> {
+    if let Some(result) = validate_ref(schema, value, ctx, state) {
+        return result;
+    }
+    // Lenient type check - accept anything coercible to string
+    if let Some(string) = value.as_str() {
+        // Emit coercion info if original was not a string
+        if !value.is_str() {
+            ctx.add_coercion_for(state, value, string.as_ref());
+        }
+        // Apply convert_to_lower_case if specified
+        let input = convert_to_lower_case(schema, value, string, ctx, state);
+        schema
+            .valid_values
+            .validate(value, input.as_ref(), ctx, state);
+        validate_min_length(schema, value, input.as_ref(), ctx, state);
+        validate_max_length(schema, value, input.as_ref(), ctx, state);
+        validate_pattern(schema, value, input.as_ref(), ctx, state);
+        NodeValidation::Valid(input)
+    } else {
+        invalid_type(value, ctx, state, Type::Str)
+    }
+}
+
+fn convert_to_lower_case<'a, V: ValidatableValue>(
     schema: &Str,
     value: &V,
-    input: String,
+    input: Cow<'a, str>,
     ctx: &mut Context,
     state: &ValidationState,
-) -> String {
+) -> Cow<'a, str> {
     if !schema.convert_to_lower_case.unwrap_or_default() {
         return input;
     }
-    let lower = input.to_lowercase();
-    if lower == input {
-        input
-    } else {
-        ctx.add_string_lowered_for(state, value, &input, &lower);
-        lower
+    if input.chars().flat_map(char::to_lowercase).eq(input.chars()) {
+        return input;
     }
+    let lower = input.to_lowercase();
+    ctx.add_string_lowered_for(state, value, &input, &lower);
+    Cow::Owned(lower)
 }
 
 /// Validate against a referenced schema (for unresolved $ref ending with #).
-fn validate_ref<V: ValidatableValue>(
+fn validate_ref<'a, V: ValidatableValue>(
     schema: &Str,
-    value: &V,
+    value: &'a V,
     ctx: &mut Context,
     state: &mut ValidationState,
-) -> Option<Option<V::Coerced>> {
+) -> Option<NodeValidation<Cow<'a, str>>> {
     if let Some(ref_) = schema.base.schema_ref.as_ref()
         && let Ok(AnySchema::Str(ref_schema)) = resolve_ref(ref_, ctx.store)
     {
-        return Some(validate(ref_schema, value, ctx, state));
+        return Some(validate_node(ref_schema, value, ctx, state));
     }
     None
 }
