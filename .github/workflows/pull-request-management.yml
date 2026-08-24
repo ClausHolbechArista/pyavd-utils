@@ -80,6 +80,7 @@ jobs:
       - name: Generate coverage report with cargo llvm-cov
         run: |
           cargo install cargo-llvm-cov --locked
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/pyavd-utils-llvm-cov-target"
           cargo llvm-cov clean --workspace
           eval "$(cargo llvm-cov show-env --sh)"
           cargo test --locked --all-targets --all-features
