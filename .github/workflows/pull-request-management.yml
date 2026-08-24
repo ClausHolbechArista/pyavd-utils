@@ -80,7 +80,12 @@ jobs:
       - name: Generate coverage report with cargo llvm-cov
         run: |
           cargo install cargo-llvm-cov --locked
-          cargo llvm-cov --locked --all-targets --all-features --lcov --output-path lcov.info
+          cargo llvm-cov clean --workspace
+          eval "$(cargo llvm-cov show-env --sh)"
+          cargo test --locked --all-targets --all-features
+          python -m pip install -e . "pytest>=8.2.0"
+          python -m pytest
+          cargo llvm-cov report --lcov --output-path lcov.info
         if: |
           matrix.os == 'ubuntu-latest'
       - name: Upload coverage report
