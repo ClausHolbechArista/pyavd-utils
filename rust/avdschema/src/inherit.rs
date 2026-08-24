@@ -320,7 +320,7 @@ mod tests {
 
         assert!(deprecation.is_some());
         let dep = deprecation.unwrap();
-        assert_eq!(dep.warning, true);
+        assert!(dep.warning);
         assert_eq!(dep.new_key, Some("new_field".to_owned()));
         assert_eq!(dep.remove_in_version, Some("10.0.0".to_owned()));
         assert_eq!(dep.removed, Some(true));

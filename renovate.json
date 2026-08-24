@@ -91,7 +91,7 @@
         "pre-commit-python"
       ],
       "semanticCommitType": "ci",
-      "commitMessagePrefix": "CI: "
+      "commitMessagePrefix": "CI: ",
       "rangeStrategy": "bump"
     }
   ]
