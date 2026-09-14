@@ -6,6 +6,9 @@
 from pathlib import Path
 from typing import Literal
 
+def compile_schema_archive(source: Path, destination: Path) -> None:
+    """Compile a raw schema-store file into the archived runtime format."""
+
 def get_list_primary_key(schema_name: Literal["eos_config"], data_path: list[str]) -> str | None:
     """
     Return the primary key for a list schema at the given data path.
@@ -27,9 +30,8 @@ def get_list_primary_key(schema_name: Literal["eos_config"], data_path: list[str
 
 def init_store_from_file(file: Path) -> None:
     """
-    Initialize the shared Schema store from a file containing the full schema store.
+    Initialize the shared Schema store from a compiled schema archive.
 
-    Usually this is the schema.json.gz file built with pyavd.
     This must be called before using validation or schema-merge APIs that rely on the shared store.
 
     Args:

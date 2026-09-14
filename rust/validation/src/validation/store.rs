@@ -8,13 +8,13 @@ use serde_json::Value;
 use yaml_parser::Node;
 use yaml_parser::parse;
 
-use super::Validation as _;
 use crate::context::Configuration;
 use crate::context::Context;
 use crate::context::ValidationResult;
 use crate::feedback::InputDiagnostic;
 use crate::feedback::ParseDiagnostic;
 use crate::validatable::ValidatableValue;
+use crate::walker::Validator;
 
 #[derive(Debug, Default)]
 /// Result of validation for a single parsed value or YAML document.
@@ -82,9 +82,11 @@ where
         configuration: Option<&Configuration>,
     ) -> Result<ValidationOutput<V::Coerced>, StoreValidateError> {
         debug!("Validating value");
-        let mut ctx = Context::new(self, configuration);
-        let schema = self.get(schema_name)?;
-        let coerced = schema.validate(value, &mut ctx);
+        let mut ctx = Context::new(configuration);
+        let schema = self.get(schema_name).ok_or_else(|| {
+            avdschema::SchemaStoreError::InvalidSchemaName(schema_name.to_owned())
+        })?;
+        let coerced = Validator::new(self, &mut ctx).validate(schema, value);
         debug!("Validating value done");
         Ok(ValidationOutput {
             result: ctx.result,
@@ -101,7 +103,9 @@ impl StoreValidateInput for Store {
         configuration: Option<&Configuration>,
     ) -> Result<InputValidationResult<Value>, StoreValidateError> {
         debug!("Validating JSON");
-        let _ = self.get(schema_name)?;
+        let _ = self.get(schema_name).ok_or_else(|| {
+            avdschema::SchemaStoreError::InvalidSchemaName(schema_name.to_owned())
+        })?;
         let value: Value = match serde_json::from_str(json) {
             Ok(value) => value,
             Err(parse_error) => {
@@ -134,7 +138,9 @@ impl StoreValidateInput for Store {
         configuration: Option<&Configuration>,
     ) -> Result<YamlValidationResult<Node<'static>>, StoreValidateError> {
         debug!("Validating YAML");
-        let _ = self.get(schema_name)?;
+        let _ = self.get(schema_name).ok_or_else(|| {
+            avdschema::SchemaStoreError::InvalidSchemaName(schema_name.to_owned())
+        })?;
         let (yaml_docs, parse_errors) = parse(yaml);
         debug!("Deserialization of YAML done");
 
@@ -178,10 +184,14 @@ mod tests {
     use crate::feedback::Violation;
     use crate::validation::test_utils::get_test_store;
 
+    fn get_test_archive() -> Store {
+        Store::compile(&get_test_store()).expect("test schema should compile")
+    }
+
     #[test]
     fn validate_yaml_err() {
         let input = "key3:\n  some_key: some_value\n";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "avd_design", None);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -205,7 +215,7 @@ mod tests {
     #[test]
     fn validate_yaml_invalid_schema() {
         let input = "";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "invalid_schema", None);
         assert!(matches!(
             result,
@@ -219,7 +229,7 @@ mod tests {
     #[test]
     fn validate_yaml_parse_error_is_returned_as_feedback() {
         let input = "[\n---\nfoo: bar\n";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "avd_design", None);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -241,7 +251,7 @@ mod tests {
     #[test]
     fn validate_yaml_parse_error_without_document_is_returned_as_feedback() {
         let input = "*undefined_alias";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "avd_design", None);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -263,7 +273,7 @@ mod tests {
     #[test]
     fn validate_yaml_multiple_documents() {
         let input = "foo: bar\n---\nkey3:\n  some_key: some_value\n";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "avd_design", None);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -286,7 +296,7 @@ mod tests {
     #[test]
     fn validate_yaml_ok_with_coerced_data() {
         let input = "key3: 123\n---\nkey3: 456\n";
-        let store = get_test_store();
+        let store = get_test_archive();
         let configuration = Configuration {
             return_coerced_data: true,
             return_coercion_infos: true,
@@ -325,7 +335,7 @@ mod tests {
     #[test]
     fn validate_json_invalid_schema() {
         let input = "{}";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_json(input, "invalid_schema", None);
         assert!(matches!(
             result,
@@ -339,7 +349,7 @@ mod tests {
     #[test]
     fn validate_json_ok_with_coerced_data() {
         let input = r#"{"key3":123}"#;
-        let store = get_test_store();
+        let store = get_test_archive();
         let configuration = Configuration {
             return_coerced_data: true,
             return_coercion_infos: true,
@@ -360,7 +370,7 @@ mod tests {
     #[test]
     fn validate_json_parse_error_is_returned_as_feedback() {
         let input = "{\"foo\":";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_json(input, "avd_design", None).unwrap();
         assert!(result.document.result.errors.is_empty());
         assert!(result.document.result.warnings.is_empty());
@@ -377,7 +387,7 @@ mod tests {
     #[test]
     fn validate_value_invalid_schema() {
         let input = serde_json::json!({});
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_value(&input, "invalid_schema", None);
         assert!(matches!(
             result,
@@ -391,7 +401,7 @@ mod tests {
     #[test]
     fn validate_value_ok_with_coerced_data() {
         let input = serde_json::json!({ "key3": 123 });
-        let store = get_test_store();
+        let store = get_test_archive();
         let configuration = Configuration {
             return_coerced_data: true,
             return_coercion_infos: true,
@@ -408,7 +418,7 @@ mod tests {
     #[test]
     fn yaml_feedback_span_is_populated() {
         let input = "key3:\n  some_key: some_value\n";
-        let store = get_test_store();
+        let store = get_test_archive();
         let result = store.validate_yaml(input, "avd_design", None).unwrap();
         let Some(feedback) = result.documents[0].result.errors.first() else {
             panic!("expected validation feedback")

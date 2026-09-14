@@ -8,9 +8,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::resolve::errors::SchemaResolverError;
-use crate::resolve_schema;
-use crate::schema::any::AnySchema;
+use crate::schema::any::SourceSchema;
 use crate::utils::dump::Dump;
 use crate::utils::load::Load;
 #[cfg(feature = "dump_load_files")]
@@ -19,12 +17,12 @@ use crate::utils::load::LoadError;
 /// Schema store containing the AVD schemas.
 /// The store is used as entrypoint for validation and when resolving a $ref pointing to a specific schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Store {
+pub struct StoreSource {
     #[serde(flatten)]
-    schemas: HashMap<String, AnySchema>,
+    schemas: HashMap<String, SourceSchema>,
 }
 
-impl Store {
+impl StoreSource {
     /// Return the schema names present in this store.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut schema_names: Vec<_> = self.schemas.keys().map(String::as_str).collect();
@@ -32,7 +30,7 @@ impl Store {
         schema_names
     }
 
-    pub fn get(&self, schema_name: &str) -> Result<&AnySchema, SchemaStoreError> {
+    pub fn get(&self, schema_name: &str) -> Result<&SourceSchema, SchemaStoreError> {
         if let Some(schema) = self.schemas.get(schema_name) {
             return Ok(schema);
         }
@@ -50,17 +48,6 @@ impl Store {
             .ok_or_else(|| SchemaStoreError::InvalidSchemaName(schema_name.to_owned()))
     }
 
-    pub fn as_resolved(mut self) -> Result<Self, SchemaResolverError> {
-        // Clone each schema so we can resolve them while still being able to resolve $refs between them.
-        let cloned_schemas = self.schemas.clone();
-        for (schema_name, mut schema) in cloned_schemas {
-            // Inplace resolve schema
-            resolve_schema(&mut schema, &self)?;
-            self.schemas.insert(schema_name, schema);
-        }
-        Ok(self)
-    }
-
     /// Create a new store instance based on the schema files in the given paths.
     /// If a path points to a directory, files matching *.yml will be read and combined
     /// with a shallow merge, so avoid overlapping keys.
@@ -71,13 +58,13 @@ impl Store {
     pub fn new_from_paths(schema_paths: HashMap<String, PathBuf>) -> Result<Self, LoadError> {
         let mut schemas = HashMap::new();
         for (schema_name, schema_path) in schema_paths {
-            schemas.insert(schema_name, AnySchema::new_from_path(schema_path)?);
+            schemas.insert(schema_name, SourceSchema::new_from_path(schema_path)?);
         }
-        Ok(Store { schemas })
+        Ok(StoreSource { schemas })
     }
 }
-impl Dump for Store {}
-impl Load for Store {}
+impl Dump for StoreSource {}
+impl Load for StoreSource {}
 
 #[derive(Debug, derive_more::Display, derive_more::From)]
 pub enum SchemaStoreError {
@@ -93,7 +80,7 @@ mod tests {
     #[cfg(feature = "dump_load_files")]
     use crate::Dump as _;
     #[cfg(feature = "dump_load_files")]
-    use crate::Store;
+    use crate::StoreSource;
     #[cfg(feature = "dump_load_files")]
     use crate::utils::test_utils::get_avd_store;
     use crate::utils::test_utils::get_test_store;
@@ -131,19 +118,19 @@ mod tests {
 
         // Now load the previously dumped files and compare
         let json_file_path = get_tmp_file("test_dump_avd_store_resolved.json");
-        let json_result = Store::from_file(Some(&json_file_path));
+        let json_result = StoreSource::from_file(Some(&json_file_path));
         assert!(json_result.is_ok());
         assert_eq!(json_result.unwrap(), *store);
 
         let gzip_file_path = get_tmp_file("test_dump_avd_store_resolved.gz");
-        let gzip_result = Store::from_file(Some(&gzip_file_path));
+        let gzip_result = StoreSource::from_file(Some(&gzip_file_path));
         assert!(gzip_result.is_ok());
         assert_eq!(gzip_result.unwrap(), *store);
 
         #[cfg(feature = "xz2")]
         {
             let xz_file_path = get_tmp_file("test_dump_avd_store_resolved.xz2");
-            let xz_result = Store::from_file(Some(&xz_file_path));
+            let xz_result = StoreSource::from_file(Some(&xz_file_path));
             assert!(xz_result.is_ok());
             assert_eq!(xz_result.unwrap(), *store);
         }
@@ -155,7 +142,7 @@ mod tests {
     fn quick_load_avd_store_json() {
         //Depends on dump to be done before. This is just here to test the speed of loading from the file.
         let file_path = get_tmp_file("test_dump_avd_store_resolved.json");
-        let result = Store::from_file(Some(&file_path));
+        let result = StoreSource::from_file(Some(&file_path));
         assert!(result.is_ok());
     }
 
@@ -165,7 +152,7 @@ mod tests {
     fn quick_load_avd_store_gz() {
         //Depends on dump to be done before. This is just here to test the speed of loading from the file.
         let file_path = get_tmp_file("test_dump_avd_store_resolved.gz");
-        let result = Store::from_file(Some(&file_path));
+        let result = StoreSource::from_file(Some(&file_path));
         assert!(result.is_ok());
     }
 
@@ -175,7 +162,7 @@ mod tests {
     fn quick_load_avd_store_xz2() {
         //Depends on dump to be done before. This is just here to test the speed of loading from the file.
         let file_path = get_tmp_file("test_dump_avd_store_resolved.xz2");
-        let result = Store::from_file(Some(&file_path));
+        let result = StoreSource::from_file(Some(&file_path));
         assert!(result.is_ok());
     }
 

@@ -7,9 +7,8 @@ use std::sync::LazyLock;
 use fancy_regex::Regex;
 
 use super::walker::Walker as _;
-use crate::Store;
-use crate::any::AnySchema;
-use crate::resolve::errors::RefSyntax;
+use crate::StoreSource;
+use crate::any::SourceSchema;
 use crate::resolve::errors::SchemaResolverError;
 
 /// Regex matching $ref syntax according the AVD metaschema.
@@ -19,8 +18,11 @@ static REF_REGEX: LazyLock<Regex> =
 /// Resolve the given ref by first finding the relevant schema in in the store
 /// and afterwards walk that schema according to the path.
 /// Returns the schema pointed to by the ref, or an error for invalid ref.
-pub fn resolve_ref<'a>(ref_: &str, store: &'a Store) -> Result<&'a AnySchema, SchemaResolverError> {
-    let syntax_err = || RefSyntax {
+pub(crate) fn resolve_ref<'a>(
+    ref_: &str,
+    store: &'a StoreSource,
+) -> Result<&'a SourceSchema, SchemaResolverError> {
+    let syntax_err = || SchemaResolverError::RefSyntax {
         schema_ref: ref_.to_owned(),
     };
     // unwrap_or_default() cannot fail: the regex is compiled above and uses no lookarounds.
@@ -40,8 +42,7 @@ pub fn resolve_ref<'a>(ref_: &str, store: &'a Store) -> Result<&'a AnySchema, Sc
 mod tests {
     use super::resolve_ref;
     use crate::resolve::errors::SchemaResolverError;
-    use crate::store::SchemaStoreError;
-    use crate::str::Str;
+    use crate::str::SourceStr;
     use crate::utils::test_utils::get_test_store;
 
     #[test]
@@ -51,7 +52,7 @@ mod tests {
         let result = resolve_ref("eos_cli_config_gen#/keys/key2", &test_store);
         assert!(result.is_ok());
         let result_schema = result.unwrap();
-        let str_schema_result: Result<&Str, _> = result_schema.try_into();
+        let str_schema_result: Result<&SourceStr, _> = result_schema.try_into();
         assert!(str_schema_result.is_ok());
         let str_schema = str_schema_result.unwrap();
         assert!(str_schema.base.description.is_some());
@@ -68,7 +69,7 @@ mod tests {
         let result = resolve_ref("eos_config#/keys/key2", &test_store);
         assert!(result.is_ok());
         let result_schema = result.unwrap();
-        let str_schema_result: Result<&Str, _> = result_schema.try_into();
+        let str_schema_result: Result<&SourceStr, _> = result_schema.try_into();
         assert!(str_schema_result.is_ok());
         let str_schema = str_schema_result.unwrap();
         assert!(str_schema.base.description.is_some());
@@ -85,7 +86,7 @@ mod tests {
         let result = resolve_ref("cv_deploy#/keys/key4", &test_store);
         assert!(result.is_ok());
         let result_schema = result.unwrap();
-        let str_schema_result: Result<&Str, _> = result_schema.try_into();
+        let str_schema_result: Result<&SourceStr, _> = result_schema.try_into();
         assert!(str_schema_result.is_ok());
         let str_schema = str_schema_result.unwrap();
         assert!(str_schema.base.description.is_some());
@@ -103,7 +104,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            SchemaResolverError::RefSyntax(_)
+            SchemaResolverError::RefSyntax { .. }
         ));
     }
 
@@ -115,7 +116,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            SchemaResolverError::RefSyntax(_)
+            SchemaResolverError::RefSyntax { .. }
         ));
     }
 
@@ -127,7 +128,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            SchemaResolverError::SchemaStoreError(SchemaStoreError::InvalidSchemaName(_))
+            SchemaResolverError::SchemaStore(crate::store::SchemaStoreError::InvalidSchemaName(_))
         ));
     }
 }
