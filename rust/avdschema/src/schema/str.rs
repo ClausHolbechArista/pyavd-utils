@@ -9,18 +9,15 @@ use fancy_regex::Regex;
 use fancy_regex::RegexBuilder;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value;
 use serde_with::skip_serializing_none;
 
-use super::any::AnySchema;
+use super::any::SourceSchema;
 use super::base::Base;
 use super::base::convert_types::ConvertTypes;
 use super::base::documentation_options::DocumentationOptions;
 use super::base::valid_values::ValidValues;
-use crate::any::Shortcuts;
-use crate::base::Deprecation;
 
-/// Enum for string formats allowed by the Str schema.
+/// Enum for string formats allowed by the [`SourceStr`] schema.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
@@ -40,7 +37,7 @@ pub enum Format {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Str {
+pub struct SourceStr {
     /// Convert string value to lower case before performing validation
     pub convert_to_lower_case: Option<bool>,
     pub format: Option<Format>,
@@ -61,29 +58,13 @@ pub struct Str {
     pub documentation_options: Option<DocumentationOptions>,
 }
 
-impl Shortcuts for Str {
-    fn is_required(&self) -> bool {
-        self.base.required.unwrap_or_default()
-    }
-
-    fn deprecation(&self) -> &Option<Deprecation> {
-        &self.base.deprecation
-    }
-    fn default_(&self) -> Option<Value> {
-        self.base
-            .default
-            .as_ref()
-            .map(|value| Value::String(value.to_owned()))
-    }
-}
-
-impl<'x> TryFrom<&'x AnySchema> for &'x Str {
+impl<'x> TryFrom<&'x SourceSchema> for &'x SourceStr {
     type Error = &'static str;
 
-    fn try_from(value: &'x AnySchema) -> Result<Self, Self::Error> {
+    fn try_from(value: &'x SourceSchema) -> Result<Self, Self::Error> {
         match value {
-            AnySchema::Str(str) => Ok(str),
-            _ => Err("Unable to convert from AnySchema to Str. Invalid Schema type."),
+            SourceSchema::Str(str) => Ok(str),
+            _ => Err("Unable to convert from SourceSchema to SourceStr. Invalid Schema type."),
         }
     }
 }
@@ -132,23 +113,22 @@ impl From<&str> for Pattern {
 #[cfg(test)]
 mod tests {
     use super::Pattern;
-    use super::Str;
-    use crate::any::AnySchema;
-    use crate::boolean::Bool;
+    use super::SourceStr;
+    use crate::any::SourceSchema;
+    use crate::boolean::SourceBool;
 
     #[test]
     fn try_from_anyschema_ok() {
-        let anyschema = &AnySchema::Str(Str::default());
-        let result: Result<&Str, _> = anyschema.try_into();
+        let anyschema = &SourceSchema::Str(SourceStr::default());
+        let result: Result<&SourceStr, _> = anyschema.try_into();
         assert!(result.is_ok());
     }
     #[test]
     fn try_from_anyschema_err() {
-        let anyschema = &AnySchema::Bool(Bool::default());
-        let result: Result<&Str, _> = anyschema.try_into();
+        let anyschema = &SourceSchema::Bool(SourceBool::default());
+        let result: Result<&SourceStr, _> = anyschema.try_into();
         assert!(result.is_err());
     }
-
     #[test]
     fn perl_classes_use_unicode_semantics() {
         let digits = Pattern::from(r"\d+");

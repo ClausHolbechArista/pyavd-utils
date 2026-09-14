@@ -3,11 +3,96 @@
 // that can be found in the LICENSE file.
 
 use avdschema::Store;
+use avdschema::StoreSource;
+use avdschema::any::SourceSchema;
+use avdschema::boolean::SourceBool;
+use avdschema::dict::SourceDict;
+use avdschema::int::SourceInt;
+use avdschema::list::SourceList;
+use avdschema::str::SourceStr;
 use serde::Deserialize as _;
 use serde_json::json;
 
-pub(crate) fn get_test_store() -> Store {
-    Store::deserialize(json!({
+use crate::context::Context;
+use crate::context::ValidationState;
+use crate::validatable::ValidatableValue;
+use crate::walker::Validator;
+
+pub(crate) trait TestValidate {
+    fn validate<V: ValidatableValue>(&self, value: &V, context: &mut Context)
+    -> Option<V::Coerced>;
+}
+
+impl TestValidate for SourceSchema {
+    fn validate<V: ValidatableValue>(
+        &self,
+        value: &V,
+        context: &mut Context,
+    ) -> Option<V::Coerced> {
+        validate_test_schema(self.clone(), value, context)
+    }
+}
+
+macro_rules! impl_test_validate {
+    ($schema:ty, $variant:ident) => {
+        impl TestValidate for $schema {
+            fn validate<V: ValidatableValue>(
+                &self,
+                value: &V,
+                context: &mut Context,
+            ) -> Option<V::Coerced> {
+                validate_test_schema(SourceSchema::$variant(self.clone()), value, context)
+            }
+        }
+    };
+}
+
+impl_test_validate!(SourceBool, Bool);
+impl_test_validate!(SourceInt, Int);
+impl_test_validate!(SourceStr, Str);
+impl_test_validate!(SourceList, List);
+impl_test_validate!(SourceDict, Dict);
+
+fn validate_test_schema<V: ValidatableValue>(
+    schema: SourceSchema,
+    value: &V,
+    context: &mut Context,
+) -> Option<V::Coerced> {
+    validate_test_schema_with_state(schema, value, context, &mut ValidationState::default())
+}
+
+pub(crate) fn validate_test_schema_with_state<V: ValidatableValue>(
+    schema: SourceSchema,
+    value: &V,
+    context: &mut Context,
+    state: &mut ValidationState,
+) -> Option<V::Coerced> {
+    const TEST_SCHEMA: &str = "__validation_test__";
+    let mut raw_store_json = serde_json::to_value(get_test_store())
+        .ok()?
+        .as_object()?
+        .clone();
+    raw_store_json.insert(TEST_SCHEMA.to_owned(), serde_json::to_value(schema).ok()?);
+    let raw_store = serde_json::from_value(serde_json::Value::Object(raw_store_json)).ok()?;
+    let archive = Store::compile(&raw_store).ok()?;
+    let compiled_schema = archive.get(TEST_SCHEMA)?;
+    let mut archived_context = Context::new(Some(&context.configuration));
+    let coerced = Validator::new(&archive, &mut archived_context).validate_with_state(
+        compiled_schema,
+        value,
+        state,
+    );
+    context.result.errors.extend(archived_context.result.errors);
+    context
+        .result
+        .warnings
+        .extend(archived_context.result.warnings);
+    context.result.infos.extend(archived_context.result.infos);
+    coerced
+}
+
+pub(crate) fn get_test_store() -> StoreSource {
+    StoreSource::deserialize(json!({
         "eos_config": {
             "type": "dict",
             "keys": {
