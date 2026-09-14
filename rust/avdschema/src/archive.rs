@@ -943,6 +943,7 @@ fn validate_schema_id(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::io::Write as _;
 
     use indexmap::IndexMap;
@@ -985,7 +986,14 @@ mod tests {
                 },
                 "test": {
                     "type": "dict",
-                    "default": {"enabled": true, "names": ["one", "two"]},
+                    "default": {
+                        "enabled": true,
+                        "names": ["one", "two"],
+                        "nothing": null,
+                        "negative": -1,
+                        "large": 9_223_372_036_854_775_808_u64,
+                        "ratio": 1.5
+                    },
                     "display_name": "Test schema",
                     "documentation_options": {"table": "root", "hide_keys": true},
                     "keys": {
@@ -1027,6 +1035,31 @@ mod tests {
         .expect("metadata schema should compile")
     }
 
+    fn assert_default_views(default: SchemaObjectValueView<'_>) {
+        let defaults = default.iter().collect::<HashMap<_, _>>();
+        assert!(matches!(defaults["enabled"], SchemaValueView::Bool(true)));
+        assert!(matches!(defaults["nothing"], SchemaValueView::Null));
+        assert!(matches!(defaults["negative"], SchemaValueView::I64(-1)));
+        assert!(matches!(
+            defaults["large"],
+            SchemaValueView::U64(9_223_372_036_854_775_808)
+        ));
+        assert!(matches!(
+            defaults["ratio"],
+            SchemaValueView::F64(value) if value.to_bits() == 1.5_f64.to_bits()
+        ));
+        let SchemaValueView::List(names) = defaults["names"] else {
+            panic!("names default should be a list")
+        };
+        assert!(matches!(
+            names.iter().collect::<Vec<_>>().as_slice(),
+            [
+                SchemaValueView::String("one"),
+                SchemaValueView::String("two")
+            ]
+        ));
+    }
+
     #[test]
     fn compiled_patterns_preserve_full_match_and_ascii_contract() {
         let store = Store::from_json(
@@ -1065,7 +1098,19 @@ mod tests {
     #[test]
     fn views_expose_effective_metadata() {
         let store = metadata_store();
-        let SchemaView::Dict(root) = store.get("test").expect("test root should exist") else {
+        let root_view = store.get("test").expect("test root should exist");
+        assert_eq!(root_view.display_name(), Some("Test schema"));
+        assert_eq!(root_view.description(), None);
+        assert!(!root_view.required());
+        assert!(root_view.deprecation().is_none());
+        assert!(root_view.default().is_some());
+        assert_eq!(
+            root_view
+                .documentation_options()
+                .and_then(DocumentationOptionsView::table),
+            Some("root")
+        );
+        let SchemaView::Dict(root) = root_view else {
             panic!("test root should be a dict")
         };
         assert_eq!(root.common().display_name(), Some("Test schema"));
@@ -1080,7 +1125,7 @@ mod tests {
         else {
             panic!("root default should be an object")
         };
-        assert_eq!(default.iter().count(), 2);
+        assert_default_views(default);
 
         let SchemaView::Str(name) = root.key("name").expect("name should exist") else {
             panic!("name should be a string")
@@ -1150,6 +1195,43 @@ mod tests {
     }
 
     #[test]
+    fn string_format_views_cover_the_source_format_contract() {
+        let formats = [
+            ("cidr", StringFormatView::Cidr),
+            ("ip", StringFormatView::Ip),
+            ("ip_pool", StringFormatView::IpPool),
+            ("ipv4", StringFormatView::Ipv4),
+            ("ipv4_cidr", StringFormatView::Ipv4Cidr),
+            ("ipv4_pool", StringFormatView::Ipv4Pool),
+            ("ipv6", StringFormatView::Ipv6),
+            ("ipv6_cidr", StringFormatView::Ipv6Cidr),
+            ("ipv6_pool", StringFormatView::Ipv6Pool),
+            ("mac", StringFormatView::Mac),
+        ];
+        let keys = formats
+            .iter()
+            .map(|(format, _expected)| {
+                (
+                    (*format).to_owned(),
+                    json!({"type": "str", "format": format}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let store =
+            Store::from_json(&json!({"test": {"type": "dict", "keys": keys}}).to_string()).unwrap();
+        let Some(SchemaView::Dict(root)) = store.get("test") else {
+            panic!("test root should be a dict")
+        };
+
+        for (format, expected) in formats {
+            let Some(SchemaView::Str(schema)) = root.key(format) else {
+                panic!("format schema should be a string")
+            };
+            assert_eq!(schema.format(), Some(expected));
+        }
+    }
+
+    #[test]
     fn path_navigation_resolves_dynamic_keys_and_static_precedence() {
         let store = metadata_store();
         let data = json!({"names": ["dynamic_name"], "name": "configured"});
@@ -1172,6 +1254,103 @@ mod tests {
                 .unwrap(),
             Some(SchemaView::Bool(_))
         ));
+    }
+
+    #[test]
+    fn path_navigation_reports_invalid_roots_and_traversal() {
+        let store = Store::from_json(
+            r#"{
+                "scalar_root": {"type": "str"},
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "scalar": {"type": "str"},
+                        "nested": {"type": "dict", "keys": {}},
+                        "empty_list": {"type": "list"},
+                        "list": {"type": "list", "items": {"type": "bool"}}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let mapping = json!({});
+
+        assert!(matches!(
+            store.get_schema_from_path("missing", &[], &mapping, None),
+            Err(SchemaPathError::InvalidSchemaName(name)) if name == "missing"
+        ));
+        assert!(matches!(
+            store.get_schema_from_path("scalar_root", &["child".into()], &mapping, None),
+            Err(SchemaPathError::SchemaNotDict)
+        ));
+        assert!(matches!(
+            store.get_schema_from_path("test", &["scalar".into()], &json!([]), None),
+            Err(SchemaPathError::ValueNotADict)
+        ));
+        assert!(matches!(
+            store.get_schema_from_path(
+                "test",
+                &["nested".into(), "missing".into()],
+                &mapping,
+                None,
+            ),
+            Ok(None)
+        ));
+        assert!(matches!(
+            store.get_schema_from_path("test", &["empty_list".into(), "0".into()], &mapping, None,),
+            Ok(None)
+        ));
+        assert!(matches!(
+            store.get_schema_from_path(
+                "test",
+                &["list".into(), "not_an_index".into()],
+                &mapping,
+                None,
+            ),
+            Ok(None)
+        ));
+        assert!(matches!(
+            store.get_schema_from_path("test", &["scalar".into(), "child".into()], &mapping, None,),
+            Err(SchemaPathError::InvalidTraversal)
+        ));
+    }
+
+    #[test]
+    fn dynamic_key_resolution_excludes_removed_and_invalid_overrides() {
+        let store = Store::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "dynamic_keys": {
+                        "active": {"type": "bool"},
+                        "removed": {
+                            "type": "bool",
+                            "deprecation": {"warning": false, "removed": true}
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let Some(SchemaView::Dict(root)) = store.get("test") else {
+            panic!("test root should be a dict")
+        };
+        let input = json!({"active": ["live"], "removed": ["gone"]});
+        let overrides = DynamicKeyOverrides::from_iter([
+            ("forced".into(), "active".into()),
+            ("forced_removed".into(), "removed".into()),
+            ("unknown".into(), "missing".into()),
+        ]);
+
+        let resolved = resolve_dynamic_keys(
+            root,
+            input.as_object().expect("input should be a mapping"),
+            Some(&overrides),
+        );
+        assert_eq!(
+            resolved.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["live", "forced"]
+        );
     }
 
     #[test]

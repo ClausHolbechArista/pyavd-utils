@@ -337,7 +337,11 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// A diagnostic describing an invalid schema encountered during compilation.
 #[derive(Debug)]
 pub enum SchemaDiagnostic {
-    Reference(crate::SchemaResolverError),
+    Reference {
+        schema_path: Vec<String>,
+        reference: String,
+        error: crate::SchemaResolverError,
+    },
     TypeMismatch {
         expected: &'static str,
         found: &'static str,
@@ -354,7 +358,15 @@ pub enum SchemaDiagnostic {
 impl std::fmt::Display for SchemaDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Reference(error) => write!(f, "Unable to resolve schema reference: {error}"),
+            Self::Reference {
+                schema_path,
+                reference,
+                error,
+            } => write!(
+                f,
+                "Unable to resolve schema reference '{reference}' while compiling '{}': {error}",
+                schema_path.join("/")
+            ),
             Self::TypeMismatch { expected, found } => write!(
                 f,
                 "Schema layering combines incompatible types: expected {expected}, found {found}"
@@ -459,7 +471,11 @@ impl<'a> Compiler<'a> {
             let root = self
                 .source
                 .get(name)
-                .map_err(|error| SchemaDiagnostic::Reference(error.into()))?;
+                .map_err(|error| SchemaDiagnostic::Reference {
+                    schema_path: vec![name.to_owned()],
+                    reference: format!("{name}#"),
+                    error: error.into(),
+                })?;
             let id = self.compile_layers(&[root], &[name.to_owned()])?;
             self.output.roots.insert(name.to_owned(), id);
         }
@@ -470,7 +486,11 @@ impl<'a> Compiler<'a> {
         let root = self
             .source
             .get(schema_name)
-            .map_err(|error| SchemaDiagnostic::Reference(error.into()))?;
+            .map_err(|error| SchemaDiagnostic::Reference {
+                schema_path: vec![schema_name.to_owned()],
+                reference: format!("{schema_name}#"),
+                error: error.into(),
+            })?;
         let id = self.compile_layers(&[root], &[schema_name.to_owned()])?;
         self.output.roots.insert(schema_name.to_owned(), id);
         Ok(self.output)
@@ -562,7 +582,13 @@ impl<'a> Compiler<'a> {
                 let Some(reference) = schema_ref(layer) else {
                     break;
                 };
-                layer = resolve_ref(reference, self.source).map_err(SchemaDiagnostic::Reference)?;
+                layer = resolve_ref(reference, self.source).map_err(|error| {
+                    SchemaDiagnostic::Reference {
+                        schema_path: schema_path.to_vec(),
+                        reference: reference.to_owned(),
+                        error,
+                    }
+                })?;
                 if chain.contains(&std::ptr::from_ref(layer)) {
                     return Err(SchemaDiagnostic::ReferenceCycle {
                         schema_path: schema_path.to_vec(),
@@ -1056,6 +1082,11 @@ mod tests {
     use super::CompileError;
     use super::CompiledStore;
     use super::SchemaDiagnostic;
+    use super::SchemaId;
+    #[cfg(feature = "dump_load_files")]
+    use super::TEMPORARY_FILE_SEQUENCE;
+    #[cfg(feature = "dump_load_files")]
+    use super::write_atomically;
     use crate::Load as _;
     use crate::SchemaResolverError;
     use crate::SchemaStoreError;
@@ -1086,12 +1117,21 @@ mod tests {
         else {
             panic!("invalid reference should return schema diagnostics")
         };
+        let invalid_reference_diagnostic = invalid_reference_diagnostics.iter().next().unwrap();
         assert!(matches!(
-            invalid_reference_diagnostics.iter().next(),
-            Some(SchemaDiagnostic::Reference(SchemaResolverError::SchemaStore(
-                SchemaStoreError::InvalidSchemaName(name)
-            ))) if name == "missing"
+            invalid_reference_diagnostic,
+            SchemaDiagnostic::Reference {
+                schema_path,
+                reference,
+                error: SchemaResolverError::SchemaStore(
+                    SchemaStoreError::InvalidSchemaName(name)
+                ),
+            } if schema_path == &["test"] && reference == "missing#" && name == "missing"
         ));
+        assert_eq!(
+            invalid_reference_diagnostic.to_string(),
+            "Unable to resolve schema reference 'missing#' while compiling 'test': Schema name 'missing' not found in the schema store."
+        );
 
         let type_mismatch = StoreSource::from_json(
             r#"{"base":{"type":"bool"},"test":{"type":"str","$ref":"base#"}}"#,
@@ -1109,6 +1149,10 @@ mod tests {
                 found: "bool"
             })
         ));
+        assert_eq!(
+            type_mismatch_diagnostics.to_string(),
+            "Schema layering combines incompatible types: expected str, found bool"
+        );
 
         let reference_cycle = StoreSource::from_json(
             r#"{"a":{"type":"bool","$ref":"b#"},"b":{"type":"bool","$ref":"a#"}}"#,
@@ -1151,5 +1195,112 @@ mod tests {
             structural_cycle_diagnostic.to_string(),
             "Schema contains a structural cycle while compiling 'root/keys/child'"
         );
+    }
+
+    #[test]
+    fn compilation_resolves_dynamic_keys_from_layered_defaults() {
+        let source = StoreSource::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "selectors": {
+                            "type": "dict",
+                            "default": {"names": ["one", "two"]}
+                        },
+                        "groups": {
+                            "type": "list",
+                            "default": [{"name": "three"}, {"name": "four"}]
+                        },
+                        "single": {"type": "str", "default": "five"},
+                        "without_default": {"type": "str"}
+                    },
+                    "dynamic_keys": {
+                        "selectors.names": {"type": "bool"},
+                        "groups.name": {"type": "bool"},
+                        "single": {"type": "bool"},
+                        "without_default": {"type": "bool"},
+                        "missing": {"type": "bool"},
+                        "removed": {
+                            "type": "bool",
+                            "deprecation": {"warning": false, "removed": true}
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let compiled = CompiledStore::compile(&source).unwrap();
+        let Some(SchemaId::Dict(root_index)) = compiled.roots.get("test") else {
+            panic!("test root should be a dictionary")
+        };
+        let root = &compiled.dicts[usize::try_from(*root_index).unwrap()];
+
+        assert_eq!(
+            root.default_dynamic_keys.get("selectors.names"),
+            Some(&vec!["one".to_owned(), "two".to_owned()])
+        );
+        assert_eq!(
+            root.default_dynamic_keys.get("groups.name"),
+            Some(&vec!["three".to_owned(), "four".to_owned()])
+        );
+        assert_eq!(
+            root.default_dynamic_keys.get("single"),
+            Some(&vec!["five".to_owned()])
+        );
+        assert!(!root.default_dynamic_keys.contains_key("without_default"));
+        assert!(!root.default_dynamic_keys.contains_key("missing"));
+        assert!(!root.default_dynamic_keys.contains_key("removed"));
+    }
+
+    #[cfg(feature = "dump_load_files")]
+    #[test]
+    fn atomic_writer_reports_invalid_destinations() {
+        let missing_name = write_atomically(std::path::Path::new(""), b"archive").unwrap_err();
+        assert_eq!(missing_name.kind(), std::io::ErrorKind::InvalidInput);
+
+        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let missing_parent = std::env::temp_dir().join(format!(
+            "avdschema-missing-parent-{}-{sequence}",
+            std::process::id()
+        ));
+        let missing_parent_error =
+            write_atomically(&missing_parent.join("schemas.rkyv"), b"archive").unwrap_err();
+        assert_eq!(missing_parent_error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(feature = "dump_load_files")]
+    #[test]
+    fn atomic_writer_removes_temporary_file_when_replace_fails() {
+        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let destination = std::env::temp_dir().join(format!(
+            "avdschema-existing-directory-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&destination).unwrap();
+
+        let error = write_atomically(&destination, b"archive").unwrap_err();
+
+        let temporary_prefix = format!(
+            ".{}.{}.",
+            destination.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        );
+        let temporary_exists = std::fs::read_dir(destination.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                let file_name = entry.file_name();
+                let file_name = file_name.to_string_lossy();
+                file_name.starts_with(&temporary_prefix) && file_name.ends_with(".tmp")
+            });
+        std::fs::remove_dir(destination).unwrap();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::IsADirectory
+                | std::io::ErrorKind::PermissionDenied
+                | std::io::ErrorKind::AlreadyExists
+        ));
+        assert!(!temporary_exists);
     }
 }

@@ -176,6 +176,8 @@ pub enum StoreValidateError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::feedback::Feedback;
     use crate::feedback::ParseDiagnosticKind;
@@ -186,6 +188,24 @@ mod tests {
 
     fn get_test_archive() -> Store {
         Store::compile(&get_test_store()).expect("test schema should compile")
+    }
+
+    fn get_null_contract_archive() -> Store {
+        Store::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "boolean": {"type": "bool"},
+                        "integer": {"type": "int"},
+                        "string": {"type": "str"},
+                        "list": {"type": "list", "items": {"type": "str"}},
+                        "dict": {"type": "dict", "keys": {}}
+                    }
+                }
+            }"#,
+        )
+        .expect("null contract schema should compile")
     }
 
     #[test]
@@ -413,6 +433,106 @@ mod tests {
 
         assert!(result.result.errors.is_empty());
         assert_eq!(result.coerced, Some(serde_json::json!({ "key3": "123" })));
+    }
+
+    #[test]
+    fn validate_null_contract_for_all_schema_types() {
+        let input = serde_json::json!({
+            "boolean": null,
+            "integer": null,
+            "string": null,
+            "list": null,
+            "dict": null
+        });
+        let store = get_null_contract_archive();
+        let allow_nulls = Configuration {
+            return_coerced_data: true,
+            ..Default::default()
+        };
+
+        let allowed = store
+            .validate_value(&input, "test", Some(&allow_nulls))
+            .unwrap();
+        assert!(allowed.result.errors.is_empty());
+        assert_eq!(allowed.coerced, Some(input.clone()));
+
+        let restrict_nulls = Configuration {
+            restrict_null_values: true,
+            return_coerced_data: true,
+            ..Default::default()
+        };
+        let restricted = store
+            .validate_value(&input, "test", Some(&restrict_nulls))
+            .unwrap();
+        let errors_by_path = restricted
+            .result
+            .errors
+            .iter()
+            .map(|feedback| (feedback.path.to_string(), &feedback.issue))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(errors_by_path.len(), 5);
+        for (key, expected) in [
+            ("boolean", Type::Bool),
+            ("integer", Type::Int),
+            ("string", Type::Str),
+            ("list", Type::List),
+            ("dict", Type::Dict),
+        ] {
+            assert!(matches!(
+                errors_by_path.get(key),
+                Some(issue)
+                    if **issue
+                        == Violation::InvalidType {
+                            expected,
+                            found: Type::Null,
+                        }
+                        .into()
+            ));
+        }
+        assert_eq!(restricted.coerced, Some(input));
+    }
+
+    #[test]
+    fn relaxed_reference_suppresses_nested_required_key_errors() {
+        let store = Store::from_json(
+            r#"{
+                "base": {
+                    "type": "dict",
+                    "keys": {"required": {"type": "str", "required": true}}
+                },
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "strict": {"type": "dict", "$ref": "base#"},
+                        "relaxed": {
+                            "type": "dict",
+                            "$ref": "base#",
+                            "relaxed_validation": true
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let output = store
+            .validate_value(
+                &serde_json::json!({"strict": {}, "relaxed": {}}),
+                "test",
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            output.result.errors,
+            vec![Feedback {
+                path: "strict".into(),
+                span: None,
+                issue: Violation::MissingRequiredKey {
+                    key: "required".to_owned(),
+                }
+                .into(),
+            }]
+        );
     }
 
     #[test]
