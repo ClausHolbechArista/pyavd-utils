@@ -5,7 +5,6 @@
 //! Immutable, reference-resolved schema tables intended for zero-copy access.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::hash::Hasher;
 #[cfg(feature = "dump_load_files")]
@@ -336,17 +335,45 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// A diagnostic describing an invalid schema encountered during compilation.
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug)]
 pub enum SchemaDiagnostic {
-    #[display("Unable to resolve schema reference: {_0}")]
     Reference(crate::SchemaResolverError),
-    #[display("Schema layering combines incompatible types: expected {expected}, found {found}")]
     TypeMismatch {
         expected: &'static str,
         found: &'static str,
     },
-    #[display("Schema contains a cyclic reference")]
-    Cycle,
+    ReferenceCycle {
+        schema_path: Vec<String>,
+        reference: String,
+    },
+    StructuralCycle {
+        schema_path: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for SchemaDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reference(error) => write!(f, "Unable to resolve schema reference: {error}"),
+            Self::TypeMismatch { expected, found } => write!(
+                f,
+                "Schema layering combines incompatible types: expected {expected}, found {found}"
+            ),
+            Self::ReferenceCycle {
+                schema_path,
+                reference,
+            } => write!(
+                f,
+                "Schema reference '{reference}' forms a cycle while compiling '{}'",
+                schema_path.join("/")
+            ),
+            Self::StructuralCycle { schema_path } => write!(
+                f,
+                "Schema contains a structural cycle while compiling '{}'",
+                schema_path.join("/")
+            ),
+        }
+    }
 }
 
 /// One or more schema diagnostics produced during compilation.
@@ -413,7 +440,7 @@ struct Compiler<'a> {
     output: CompiledStore,
     interned: HashMap<NodeKey, SchemaId>,
     memoized_layers: HashMap<Vec<*const SourceSchema>, SchemaId>,
-    compiling_layers: HashSet<Vec<*const SourceSchema>>,
+    compiling_layers: HashMap<Vec<*const SourceSchema>, Vec<String>>,
 }
 
 impl<'a> Compiler<'a> {
@@ -423,7 +450,7 @@ impl<'a> Compiler<'a> {
             output: CompiledStore::default(),
             interned: HashMap::new(),
             memoized_layers: HashMap::new(),
-            compiling_layers: HashSet::new(),
+            compiling_layers: HashMap::new(),
         }
     }
 
@@ -433,7 +460,7 @@ impl<'a> Compiler<'a> {
                 .source
                 .get(name)
                 .map_err(|error| SchemaDiagnostic::Reference(error.into()))?;
-            let id = self.compile_layers(&[root])?;
+            let id = self.compile_layers(&[root], &[name.to_owned()])?;
             self.output.roots.insert(name.to_owned(), id);
         }
         Ok(self.output)
@@ -444,13 +471,17 @@ impl<'a> Compiler<'a> {
             .source
             .get(schema_name)
             .map_err(|error| SchemaDiagnostic::Reference(error.into()))?;
-        let id = self.compile_layers(&[root])?;
+        let id = self.compile_layers(&[root], &[schema_name.to_owned()])?;
         self.output.roots.insert(schema_name.to_owned(), id);
         Ok(self.output)
     }
 
-    fn compile_layers(&mut self, declared: &[&'a SourceSchema]) -> Result<SchemaId, CompileError> {
-        let layers = self.expand_layers(declared)?;
+    fn compile_layers(
+        &mut self,
+        declared: &[&'a SourceSchema],
+        schema_path: &[String],
+    ) -> Result<SchemaId, CompileError> {
+        let layers = self.expand_layers(declared, schema_path)?;
         let memo_key = layers
             .iter()
             .map(|schema| std::ptr::from_ref(*schema))
@@ -458,28 +489,35 @@ impl<'a> Compiler<'a> {
         if let Some(id) = self.memoized_layers.get(&memo_key) {
             return Ok(*id);
         }
-        if !self.compiling_layers.insert(memo_key.clone()) {
-            return Err(SchemaDiagnostic::Cycle.into());
+        if let Some(cycle_origin) = self.compiling_layers.get(&memo_key) {
+            return Err(SchemaDiagnostic::StructuralCycle {
+                schema_path: cycle_origin.clone(),
+            }
+            .into());
         }
+        self.compiling_layers
+            .insert(memo_key.clone(), schema_path.to_vec());
 
         let node_result = match layers.first().copied() {
             Some(SourceSchema::Bool(_)) => NodeKey::Bool(Self::compile_bool(&layers)),
             Some(SourceSchema::Int(_)) => NodeKey::Int(Self::compile_int(&layers)),
             Some(SourceSchema::Str(_)) => NodeKey::Str(Self::compile_str(&layers)),
-            Some(SourceSchema::List(_)) => match self.compile_list(&layers) {
+            Some(SourceSchema::List(_)) => match self.compile_list(&layers, schema_path) {
                 Ok(schema) => NodeKey::List(schema),
                 Err(error) => {
                     self.compiling_layers.remove(&memo_key);
                     return Err(error);
                 }
             },
-            Some(SourceSchema::Dict(_)) => match self.compile_dict(declared, &layers) {
-                Ok(schema) => NodeKey::Dict(schema),
-                Err(error) => {
-                    self.compiling_layers.remove(&memo_key);
-                    return Err(error);
+            Some(SourceSchema::Dict(_)) => {
+                match self.compile_dict(declared, &layers, schema_path) {
+                    Ok(schema) => NodeKey::Dict(schema),
+                    Err(error) => {
+                        self.compiling_layers.remove(&memo_key);
+                        return Err(error);
+                    }
                 }
-            },
+            }
             None => {
                 self.compiling_layers.remove(&memo_key);
                 return Err(SchemaDiagnostic::TypeMismatch {
@@ -498,6 +536,7 @@ impl<'a> Compiler<'a> {
     fn expand_layers(
         &self,
         declared: &[&'a SourceSchema],
+        schema_path: &[String],
     ) -> Result<Vec<&'a SourceSchema>, CompileError> {
         let Some(first_declared) = declared.first().copied() else {
             return Err(SchemaDiagnostic::TypeMismatch {
@@ -518,16 +557,19 @@ impl<'a> Compiler<'a> {
                     }
                     .into());
                 }
-                let pointer = std::ptr::from_ref(layer);
-                if chain.contains(&pointer) {
-                    return Err(SchemaDiagnostic::Cycle.into());
-                }
-                chain.push(pointer);
+                chain.push(std::ptr::from_ref(layer));
                 result.push(layer);
                 let Some(reference) = schema_ref(layer) else {
                     break;
                 };
                 layer = resolve_ref(reference, self.source).map_err(SchemaDiagnostic::Reference)?;
+                if chain.contains(&std::ptr::from_ref(layer)) {
+                    return Err(SchemaDiagnostic::ReferenceCycle {
+                        schema_path: schema_path.to_vec(),
+                        reference: reference.to_owned(),
+                    }
+                    .into());
+                }
             }
         }
         Ok(result)
@@ -595,7 +637,11 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_list(&mut self, layers: &[&'a SourceSchema]) -> Result<ListSchema, CompileError> {
+    fn compile_list(
+        &mut self,
+        layers: &[&'a SourceSchema],
+        schema_path: &[String],
+    ) -> Result<ListSchema, CompileError> {
         let schemas = layers.iter().filter_map(|schema| match schema {
             SourceSchema::List(schema) => Some(schema),
             _ => None,
@@ -607,7 +653,7 @@ impl<'a> Compiler<'a> {
         Ok(ListSchema {
             common: common(layers),
             items: (!item_layers.is_empty())
-                .then(|| self.compile_layers(&item_layers))
+                .then(|| self.compile_layers(&item_layers, &schema_path_with(schema_path, "items")))
                 .transpose()?,
             min_length: schemas.clone().find_map(|schema| schema.min_length),
             max_length: schemas.clone().find_map(|schema| schema.max_length),
@@ -628,19 +674,23 @@ impl<'a> Compiler<'a> {
         &mut self,
         declared: &[&'a SourceSchema],
         layers: &[&'a SourceSchema],
+        schema_path: &[String],
     ) -> Result<DictSchema, CompileError> {
         let schemas = layers.iter().filter_map(|schema| match schema {
             SourceSchema::Dict(schema) => Some(schema),
             _ => None,
         });
-        let keys =
-            self.compile_dict_children(schemas.clone().filter_map(|schema| schema.keys.as_ref()))?;
+        let keys = self.compile_dict_children(
+            schemas.clone().filter_map(|schema| schema.keys.as_ref()),
+            &schema_path_with(schema_path, "keys"),
+        )?;
         let dynamic_keys = self.compile_dict_children(
             schemas
                 .clone()
                 .filter_map(|schema| schema.dynamic_keys.as_ref()),
+            &schema_path_with(schema_path, "dynamic_keys"),
         )?;
-        let default_dynamic_keys = default_dynamic_keys(&dynamic_keys, self, layers)?;
+        let default_dynamic_keys = default_dynamic_keys(&dynamic_keys, self, layers, schema_path)?;
         let begin_relaxed_validation = matches!(
             declared.first(),
             Some(SourceSchema::Dict(schema))
@@ -663,6 +713,7 @@ impl<'a> Compiler<'a> {
     fn compile_dict_children(
         &mut self,
         maps: impl Iterator<Item = &'a ordermap::OrderMap<String, SourceSchema>>,
+        schema_path: &[String],
     ) -> Result<IndexMap<String, SchemaId>, CompileError> {
         let mut child_layers: IndexMap<&str, Vec<&SourceSchema>> = IndexMap::new();
         for map in maps {
@@ -672,7 +723,10 @@ impl<'a> Compiler<'a> {
         }
         child_layers
             .into_iter()
-            .map(|(name, layers)| self.compile_layers(&layers).map(|id| (name.to_owned(), id)))
+            .map(|(name, layers)| {
+                self.compile_layers(&layers, &schema_path_with(schema_path, name))
+                    .map(|id| (name.to_owned(), id))
+            })
             .collect()
     }
 
@@ -741,6 +795,12 @@ impl<'a> Compiler<'a> {
         };
         deprecation.is_some_and(|deprecation| deprecation.removed)
     }
+}
+
+fn schema_path_with(schema_path: &[String], segment: &str) -> Vec<String> {
+    let mut child_path = schema_path.to_vec();
+    child_path.push(segment.to_owned());
+    child_path
 }
 
 fn common(layers: &[&SourceSchema]) -> Common {
@@ -849,6 +909,7 @@ fn default_dynamic_keys(
     dynamic_keys: &IndexMap<String, SchemaId>,
     compiler: &Compiler<'_>,
     layers: &[&SourceSchema],
+    schema_path: &[String],
 ) -> Result<IndexMap<String, Vec<String>>, CompileError> {
     let mut result = IndexMap::new();
     for (path, dynamic_schema) in dynamic_keys {
@@ -868,7 +929,8 @@ fn default_dynamic_keys(
         if child_layers.is_empty() {
             continue;
         }
-        let expanded_child_layers = compiler.expand_layers(&child_layers)?;
+        let child_schema_path = schema_path_with(&schema_path_with(schema_path, "keys"), root_key);
+        let expanded_child_layers = compiler.expand_layers(&child_layers, &child_schema_path)?;
         let Some(default) = expanded_child_layers
             .iter()
             .find_map(|schema| schema_default(schema))
@@ -1057,10 +1119,18 @@ mod tests {
         else {
             panic!("reference cycle should return schema diagnostics")
         };
+        let reference_cycle_diagnostic = reference_cycle_diagnostics.iter().next().unwrap();
         assert!(matches!(
-            reference_cycle_diagnostics.iter().next(),
-            Some(SchemaDiagnostic::Cycle)
+            reference_cycle_diagnostic,
+            SchemaDiagnostic::ReferenceCycle {
+                schema_path,
+                reference,
+            } if schema_path == &["a"] && reference == "a#"
         ));
+        assert_eq!(
+            reference_cycle_diagnostic.to_string(),
+            "Schema reference 'a#' forms a cycle while compiling 'a'"
+        );
 
         let structural_cycle = StoreSource::from_json(
             r#"{"root":{"type":"dict","keys":{"child":{"type":"dict","$ref":"root#"}}}}"#,
@@ -1071,9 +1141,15 @@ mod tests {
         else {
             panic!("structural cycle should return schema diagnostics")
         };
+        let structural_cycle_diagnostic = structural_cycle_diagnostics.iter().next().unwrap();
         assert!(matches!(
-            structural_cycle_diagnostics.iter().next(),
-            Some(SchemaDiagnostic::Cycle)
+            structural_cycle_diagnostic,
+            SchemaDiagnostic::StructuralCycle { schema_path }
+                if schema_path == &["root", "keys", "child"]
         ));
+        assert_eq!(
+            structural_cycle_diagnostic.to_string(),
+            "Schema contains a structural cycle while compiling 'root/keys/child'"
+        );
     }
 }
