@@ -7,8 +7,6 @@ use std::iter::Peekable;
 use ordermap::OrderMap;
 
 use crate::any::SourceSchema;
-use crate::dict::SourceDict;
-use crate::list::SourceList;
 
 pub(crate) trait Walker {
     fn walk<'a, I>(&self, path: Peekable<I>) -> Result<&SourceSchema, SchemaWalkError>
@@ -16,102 +14,67 @@ pub(crate) trait Walker {
         I: Iterator<Item = &'a str> + std::fmt::Debug;
 }
 
-impl Walker for SourceList {
-    fn walk<'a, I>(&self, mut path: Peekable<I>) -> Result<&SourceSchema, SchemaWalkError>
-    where
-        I: Iterator<Item = &'a str> + std::fmt::Debug,
-    {
-        match path.next() {
-            Some("items") => match &self.items {
-                Some(schema) => schema.walk(path),
-                None => Err(SchemaWalkError::PathNotFound {
-                    element: "items".into(),
-                }),
-            },
-            Some(value) => Err(SchemaWalkError::PathNotFound {
-                element: value.into(),
-            }),
-            None => Err(SchemaWalkError::Internal),
-        }
-    }
-}
-
-impl Walker for OrderMap<String, SourceSchema> {
-    fn walk<'a, I>(&self, mut path: Peekable<I>) -> Result<&SourceSchema, SchemaWalkError>
-    where
-        I: Iterator<Item = &'a str> + std::fmt::Debug,
-    {
-        match path.next() {
-            Some(key) => match self.get(key) {
-                Some(value) => value.walk(path),
-                None => Err(SchemaWalkError::PathNotFound {
-                    element: key.into(),
-                }),
-            },
-            None => Err(SchemaWalkError::PointingToKeys),
-        }
-    }
-}
-
-impl Walker for SourceDict {
-    fn walk<'a, I>(&self, mut path: Peekable<I>) -> Result<&SourceSchema, SchemaWalkError>
-    where
-        I: Iterator<Item = &'a str> + std::fmt::Debug,
-    {
-        match path.next() {
-            Some("keys") => self.keys.as_ref().map_or_else(
-                || {
-                    Err(SchemaWalkError::PathNotFound {
-                        element: "keys".into(),
-                    })
-                },
-                |keys| keys.walk(path),
-            ),
-            Some("dynamic_keys") => self.dynamic_keys.as_ref().map_or_else(
-                || {
-                    Err(SchemaWalkError::PathNotFound {
-                        element: "dynamic_keys".into(),
-                    })
-                },
-                |dynamic_keys| dynamic_keys.walk(path),
-            ),
-            Some("$defs") => self.schema_defs.as_ref().map_or_else(
-                || {
-                    Err(SchemaWalkError::PathNotFound {
-                        element: "$defs".into(),
-                    })
-                },
-                |schema_defs| schema_defs.walk(path),
-            ),
-            Some(element) => Err(SchemaWalkError::InvalidPathElement {
-                element: element.into(),
-            }),
-            None => Err(SchemaWalkError::Internal),
-        }
-    }
-}
-
 impl Walker for SourceSchema {
     fn walk<'a, I>(&self, mut path: Peekable<I>) -> Result<&SourceSchema, SchemaWalkError>
     where
         I: Iterator<Item = &'a str> + std::fmt::Debug,
     {
-        if path.peek().is_none() {
+        let Some(element) = path.next() else {
             return Ok(self);
-        }
+        };
         match self {
-            SourceSchema::List(schema) => schema.walk(path),
-            SourceSchema::Dict(schema) => schema.walk(path),
-            _ => Err(SchemaWalkError::NotDictOrList),
+            Self::List(schema) => {
+                if element != "items" {
+                    return Err(SchemaWalkError::PathNotFound {
+                        element: element.to_owned(),
+                    });
+                }
+                schema
+                    .items
+                    .as_deref()
+                    .ok_or_else(|| SchemaWalkError::PathNotFound {
+                        element: element.to_owned(),
+                    })?
+                    .walk(path)
+            }
+            Self::Dict(schema) => match element {
+                "keys" => walk_mapping(schema.keys.as_ref(), element, path),
+                "dynamic_keys" => walk_mapping(schema.dynamic_keys.as_ref(), element, path),
+                "$defs" => walk_mapping(schema.schema_defs.as_ref(), element, path),
+                _ => Err(SchemaWalkError::InvalidPathElement {
+                    element: element.to_owned(),
+                }),
+            },
+            Self::Bool(_) | Self::Int(_) | Self::Str(_) => Err(SchemaWalkError::NotDictOrList),
         }
     }
+}
+
+fn walk_mapping<'schema, 'path, I>(
+    mapping: Option<&'schema OrderMap<String, SourceSchema>>,
+    mapping_name: &str,
+    mut path: Peekable<I>,
+) -> Result<&'schema SourceSchema, SchemaWalkError>
+where
+    I: Iterator<Item = &'path str> + std::fmt::Debug,
+{
+    let mapping = mapping.ok_or_else(|| SchemaWalkError::PathNotFound {
+        element: mapping_name.to_owned(),
+    })?;
+    let Some(key) = path.next() else {
+        return Err(SchemaWalkError::PointingToKeys);
+    };
+    mapping
+        .get(key)
+        .ok_or_else(|| SchemaWalkError::PathNotFound {
+            element: key.to_owned(),
+        })?
+        .walk(path)
 }
 
 /// Structured failure encountered while walking a reference path.
 #[derive(Debug, derive_more::Display)]
 pub enum SchemaWalkError {
-    #[display("Internal error. SourceSchema should have returned the schema.")]
-    Internal,
     #[display(
         "Invalid schema path. The element '{element}' is invalid. All path elements except the last must go via lists or dicts."
     )]

@@ -41,7 +41,10 @@ pub(crate) fn resolve_ref<'a>(
 #[cfg(test)]
 mod tests {
     use super::resolve_ref;
+    use crate::Load as _;
+    use crate::StoreSource;
     use crate::resolve::errors::SchemaResolverError;
+    use crate::resolve::walker::SchemaWalkError;
     use crate::str::SourceStr;
     use crate::utils::test_utils::get_test_store;
 
@@ -129,6 +132,83 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             SchemaResolverError::SchemaStore(crate::store::SchemaStoreError::InvalidSchemaName(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_ref_walks_all_schema_containers() {
+        let store = StoreSource::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "list": {"type": "list", "items": {"type": "bool"}}
+                    },
+                    "dynamic_keys": {"dynamic": {"type": "int"}},
+                    "$defs": {"definition": {"type": "str"}}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            resolve_ref("test#/keys/list/items", &store),
+            Ok(crate::any::SourceSchema::Bool(_))
+        ));
+        assert!(matches!(
+            resolve_ref("test#/dynamic_keys/dynamic", &store),
+            Ok(crate::any::SourceSchema::Int(_))
+        ));
+        assert!(matches!(
+            resolve_ref("test#/$defs/definition", &store),
+            Ok(crate::any::SourceSchema::Str(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_ref_reports_structured_walk_errors() {
+        let store = StoreSource::from_json(
+            r#"{
+                "scalar": {"type": "str"},
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "list": {"type": "list"}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            resolve_ref("test#/keys/missing", &store),
+            Err(SchemaResolverError::SchemaWalk(
+                SchemaWalkError::PathNotFound { element }
+            )) if element == "missing"
+        ));
+        assert!(matches!(
+            resolve_ref("test#/keys", &store),
+            Err(SchemaResolverError::SchemaWalk(
+                SchemaWalkError::PointingToKeys
+            ))
+        ));
+        assert!(matches!(
+            resolve_ref("test#/invalid/path", &store),
+            Err(SchemaResolverError::SchemaWalk(
+                SchemaWalkError::InvalidPathElement { element }
+            )) if element == "invalid"
+        ));
+        assert!(matches!(
+            resolve_ref("scalar#/keys/value", &store),
+            Err(SchemaResolverError::SchemaWalk(
+                SchemaWalkError::NotDictOrList
+            ))
+        ));
+        assert!(matches!(
+            resolve_ref("test#/keys/list/items", &store),
+            Err(SchemaResolverError::SchemaWalk(
+                SchemaWalkError::PathNotFound { element }
+            )) if element == "items"
         ));
     }
 }
