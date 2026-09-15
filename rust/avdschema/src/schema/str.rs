@@ -105,6 +105,9 @@ impl Pattern {
         self.compiled_pattern
             .get_or_init(|| {
                 RegexBuilder::new(format!("^{}$", &self.pattern).as_str())
+                    // This keeps the Perl classes `\d`, `\s`, and `\w` enabled with ASCII
+                    // semantics; see `perl_classes_compile`. It only disables their Unicode
+                    // expansion and Unicode properties such as `\p{Greek}`.
                     .unicode_mode(false)
                     .build()
             })
