@@ -93,6 +93,20 @@ jobs:
       - name: Test building to all targets
         run: cargo build --locked --all-targets --all-features
 
+  cargo_wasm:
+    name: Check AVD LSP support WASM contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Check lean AVD LSP support build
+        run: cargo check --locked --no-default-features -p avd-lsp-support --target wasm32-unknown-unknown
+
   codecov:
     name: Upload coverage to CodeCov
     needs: [python_coverage, cargo_build_and_test]

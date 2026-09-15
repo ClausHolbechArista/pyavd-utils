@@ -12,6 +12,11 @@ graph LR
 validation["crate validation"]
 avdschema["crate avdschema"]
 validation --->|depends on| avdschema
+avd_lsp_support["crate avd-lsp-support"]
+avd_lsp_support --->|lean dependency| avdschema
+avd_lsp_support --->|lean dependency| validation
+avd_lsp_support --->|lean dependency| yaml_parser
+yaml_parser["crate yaml-parser"]
 passwords["crate passwords"]
 python_bindings["crate python-bindings"]
 python_bindings --->|depends on| avdschema
@@ -28,17 +33,16 @@ accelerators, gzip loading, and YAML file support. Full Unicode properties and
 scripts are intentionally unsupported, so patterns such as `\p{Greek}` are
 rejected.
 
-WASM or other size-sensitive applications consuming an uncompressed JSON
-schema can omit the performance accelerators, gzip, and YAML while retaining
-the schema-required syntax:
+The AVD language server consumes these crates through `avd-lsp-support`. That
+crate exposes the exact schema, validation, and YAML parser API used by the LSP
+and owns its lean feature selection:
 
 ```toml
-avdschema = { version = "0.0.7", default-features = false }
-
-validation = { version = "0.0.7", default-features = false }
-
-yaml-parser = { version = "0.0.7", default-features = false, features = ["avdschema-core"] }
+avd-lsp-support = { version = "0.0.7", default-features = false }
 ```
+
+Native LSP consumers can enable its `gzip` feature when needed. The browser
+WASM build should retain the empty default feature set.
 
 The existing `yaml-parser` feature named `avdschema` retains the default
 `avdschema` feature set, including performance accelerators, gzip, and YAML.
