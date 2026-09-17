@@ -62,7 +62,9 @@ where
         element: mapping_name.to_owned(),
     })?;
     let Some(key) = path.next() else {
-        return Err(SchemaWalkError::PointingToKeys);
+        return Err(SchemaWalkError::PointingToMapping {
+            mapping: mapping_name.to_owned(),
+        });
     };
     mapping
         .get(key)
@@ -85,6 +87,10 @@ pub enum SchemaWalkError {
     NotDictOrList,
     #[display("Invalid schema path. The element '{element}' was not found.")]
     PathNotFound { element: String },
-    #[display("Invalid schema path. A path can not point to 'keys' of a dict schema.")]
-    PointingToKeys,
+    /// The path ended at a mapping instead of selecting a schema from it.
+    #[display("Invalid schema path. A path cannot end at the '{mapping}' schema mapping.")]
+    PointingToMapping {
+        /// Name of the terminal mapping, such as `keys`, `dynamic_keys`, or `$defs`.
+        mapping: String,
+    },
 }
