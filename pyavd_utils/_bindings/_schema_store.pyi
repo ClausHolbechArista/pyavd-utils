@@ -35,8 +35,8 @@ def init_store_from_file(file: Path) -> None:
     This must be called before using validation or schema-merge APIs that rely on the shared store.
 
     Args:
-        file: Path to the json, yml or json.gz file holding the schema store.
+        file: Path to the compiled schema archive.
 
     Raises:
-        RuntimeError: For any issue hit during loading, deserializing, combining and resolving schemas.
+        RuntimeError: If the store was already initialized or the archive cannot be opened or validated.
     """

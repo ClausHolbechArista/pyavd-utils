@@ -2,6 +2,7 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
+use avdschema::SchemaView;
 use avdschema::Store;
 use avdschema::StoreSource;
 use avdschema::any::SourceSchema;
@@ -17,6 +18,8 @@ use crate::context::Context;
 use crate::context::ValidationState;
 use crate::validatable::ValidatableValue;
 use crate::walker::Validator;
+
+const TEST_SCHEMA: &str = "__validation_test__";
 
 pub(crate) trait TestValidate {
     fn validate<V: ValidatableValue>(&self, value: &V, context: &mut Context)
@@ -67,15 +70,8 @@ pub(crate) fn validate_test_schema_with_state<V: ValidatableValue>(
     context: &mut Context,
     state: &mut ValidationState,
 ) -> Option<V::Coerced> {
-    const TEST_SCHEMA: &str = "__validation_test__";
-    let mut raw_store_json = serde_json::to_value(get_test_store())
-        .ok()?
-        .as_object()?
-        .clone();
-    raw_store_json.insert(TEST_SCHEMA.to_owned(), serde_json::to_value(schema).ok()?);
-    let raw_store = serde_json::from_value(serde_json::Value::Object(raw_store_json)).ok()?;
-    let archive = Store::compile(&raw_store).ok()?;
-    let compiled_schema = archive.get(TEST_SCHEMA)?;
+    let archive = compile_test_schema(schema);
+    let compiled_schema = get_compiled_test_schema(&archive);
     let mut archived_context = Context::new(Some(&context.configuration));
     let coerced = Validator::new(&archive, &mut archived_context).validate_with_state(
         compiled_schema,
@@ -89,6 +85,27 @@ pub(crate) fn validate_test_schema_with_state<V: ValidatableValue>(
         .extend(archived_context.result.warnings);
     context.result.infos.extend(archived_context.result.infos);
     coerced
+}
+
+fn compile_test_schema(schema: SourceSchema) -> Store {
+    let mut raw_store_json = serde_json::to_value(get_test_store())
+        .expect("test schema store should serialize")
+        .as_object()
+        .expect("test schema store should serialize as an object")
+        .clone();
+    raw_store_json.insert(
+        TEST_SCHEMA.to_owned(),
+        serde_json::to_value(schema).expect("test schema should serialize"),
+    );
+    let raw_store = serde_json::from_value(serde_json::Value::Object(raw_store_json))
+        .expect("test schema store should deserialize");
+    Store::compile(&raw_store).expect("test schema should compile")
+}
+
+fn get_compiled_test_schema(archive: &Store) -> SchemaView<'_> {
+    archive
+        .get(TEST_SCHEMA)
+        .expect("compiled test schema should be present")
 }
 
 pub(crate) fn get_test_store() -> StoreSource {
