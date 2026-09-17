@@ -60,6 +60,14 @@ pub enum GenerationError {
         /// Name of the unsupported schema feature.
         feature: &'static str,
     },
+    /// Generation metadata required by an artifact convention is absent.
+    #[display("Python model generation requires '{metadata}' at '{schema_path}'")]
+    MissingMetadata {
+        /// Path of the schema occurrence missing required metadata.
+        schema_path: String,
+        /// Name of the missing metadata field.
+        metadata: &'static str,
+    },
 }
 
 impl From<CompileError> for GenerationError {
@@ -93,7 +101,7 @@ pub fn generate_python_models_projection(
             found: runtime_type(root_occurrence.schema_id()),
         });
     };
-    if !dynamic_keys.is_empty() {
+    if !dynamic_keys.is_empty() && generated_class_name != "EosDesigns" {
         return Err(GenerationError::Unsupported {
             schema_path: root_occurrence.path().join("/"),
             feature: "dynamic keys",
@@ -108,32 +116,28 @@ pub fn generate_python_models_projection(
             root_key: root_key.clone(),
         });
     }
-    if matches!(generated_class_name, "EosDesigns" | "EosCliConfigGen")
-        || generated_class_name.ends_with("Protocol")
-    {
-        return Err(GenerationError::Unsupported {
-            schema_path: schema_name.to_owned(),
-            feature: "root-specific base models",
-        });
-    }
     for (root_key, occurrence_id) in keys {
         if root_keys.is_empty() || root_keys.iter().any(|selected| selected == root_key) {
             validate_supported_occurrence(&graph, *occurrence_id)?;
         }
     }
-    let root = build_node(
+    let mut root = build_node(
         &graph,
         graph.root(),
         generated_class_name,
         (!root_keys.is_empty()).then_some(root_keys),
+        Some(root_base(generated_class_name)),
     );
+    if generated_class_name == "EosDesigns" {
+        augment_eos_designs_root(&graph, &mut root)?;
+    }
     let mut imports = ImportSet::default();
     root.collect_imports(&mut imports);
     let mut output = String::from(HEADER);
     render_imports(&mut output, &imports);
     output.push_str("\n\n");
     root.render(&mut output, 0);
-    while output.ends_with("\n\n") {
+    while output.ends_with('\n') {
         output.pop();
     }
     output.push('\n');
@@ -154,47 +158,22 @@ fn validate_supported_occurrence(
     };
     match occurrence.schema_id() {
         SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => {}
-        SchemaId::List(index) => {
-            let schema = &graph.compiled().lists[index as usize];
-            if schema.common.default.is_some() {
-                return Err(unsupported("list defaults"));
-            }
-            if schema.primary_key.is_some() && schema.allow_duplicate_primary_key {
-                return Err(unsupported("lists with duplicate primary keys"));
-            }
+        SchemaId::List(_) => {
             let OccurrenceKind::List { items } = occurrence.kind() else {
                 return Err(unsupported("a list occurrence without list children"));
             };
             let Some(items) = items else {
                 return Err(unsupported("lists without an item schema"));
             };
-            let item_occurrence = graph.occurrence_internal(*items);
-            if matches!(item_occurrence.schema_id(), SchemaId::List(_)) {
+            if matches!(
+                graph.occurrence_internal(*items).schema_id(),
+                SchemaId::List(_)
+            ) {
                 return Err(unsupported("nested lists"));
             }
-            match item_occurrence.schema_id() {
-                SchemaId::Int(item_index)
-                    if graph.compiled().ints[item_index as usize]
-                        .valid_values
-                        .is_some() =>
-                {
-                    return Err(unsupported("literal scalar list items"));
-                }
-                SchemaId::Str(item_index)
-                    if graph.compiled().strings[item_index as usize]
-                        .valid_values
-                        .is_some() =>
-                {
-                    return Err(unsupported("literal scalar list items"));
-                }
-                _ => validate_supported_occurrence(graph, *items)?,
-            }
+            validate_supported_occurrence(graph, *items)?;
         }
-        SchemaId::Dict(index) => {
-            let schema = &graph.compiled().dicts[index as usize];
-            if schema.common.default.is_some() {
-                return Err(unsupported("dictionary defaults"));
-            }
+        SchemaId::Dict(_) => {
             let OccurrenceKind::Dict { keys, dynamic_keys } = occurrence.kind() else {
                 return Err(unsupported(
                     "a dictionary occurrence without dictionary children",
@@ -203,10 +182,7 @@ fn validate_supported_occurrence(
             if !dynamic_keys.is_empty() {
                 return Err(unsupported("dynamic keys"));
             }
-            for (key, child) in keys {
-                if !is_python_identifier(key) {
-                    return Err(unsupported("Python field aliases"));
-                }
+            for child in keys.values() {
                 validate_supported_occurrence(graph, *child)?;
             }
         }
@@ -243,8 +219,10 @@ impl ClassPlan {
 struct ModelPlan {
     name: String,
     base: String,
+    description: Option<String>,
     classes: Vec<ClassPlan>,
     fields: Vec<FieldPlan>,
+    class_vars: Vec<ClassVarPlan>,
     allow_other_keys: bool,
 }
 
@@ -255,27 +233,38 @@ impl ModelPlan {
             level,
             &format!("class {}({}):", self.name, self.base),
         );
-        line(
-            output,
-            level + 1,
-            &format!("\"\"\"Subclass of {}.\"\"\"", self.base),
-        );
+        if let Some(description) = &self.description {
+            render_docstring(output, level + 1, description);
+        }
         if !self.classes.is_empty() {
-            output.push('\n');
             for (index, class) in self.classes.iter().enumerate() {
-                if index > 0 {
+                if index > 0 && !matches!(self.classes.get(index - 1), Some(ClassPlan::Literal(_)))
+                {
                     output.push('\n');
                 }
                 class.render(output, level + 1);
             }
-        }
-        if !self.fields.is_empty() {
             if !matches!(self.classes.last(), Some(ClassPlan::Literal(_))) {
                 output.push('\n');
             }
+        }
+        if !self.class_vars.is_empty() {
+            for class_var in &self.class_vars {
+                line(
+                    output,
+                    level + 1,
+                    &format!(
+                        "{}: ClassVar[{}] = {}",
+                        class_var.name, class_var.type_hint, class_var.value
+                    ),
+                );
+            }
+        }
+        if !self.fields.is_empty() {
             self.render_fields(output, level + 1);
-            output.push('\n');
+            output.push_str("\n\n");
             self.render_init(output, level + 1);
+            output.push('\n');
         }
     }
 
@@ -292,7 +281,7 @@ impl ModelPlan {
                 level + 1,
                 &format!(
                     "\"{}\": {{\"type\": {}{}}}{}",
-                    field.key,
+                    field.name,
                     field.runtime_type,
                     field
                         .default
@@ -304,6 +293,37 @@ impl ModelPlan {
             );
         }
         line(output, level, "}");
+        let remapped_fields = self
+            .fields
+            .iter()
+            .filter(|field| field.name != field.key)
+            .collect::<Vec<_>>();
+        if !remapped_fields.is_empty() {
+            line(
+                output,
+                level,
+                &format!(
+                    "_field_to_key_map: ClassVar[dict] = {{{}}}",
+                    remapped_fields
+                        .iter()
+                        .map(|field| format!("'{}': '{}'", field.name, field.key))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            line(
+                output,
+                level,
+                &format!(
+                    "_key_to_field_map: ClassVar[dict] = {{{}}}",
+                    remapped_fields
+                        .iter()
+                        .map(|field| format!("'{}': '{}'", field.key, field.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
         if self.allow_other_keys {
             line(output, level, "_allow_other_keys: ClassVar[bool] = True");
         }
@@ -314,7 +334,7 @@ impl ModelPlan {
                 &format!("{}: {}", field.name, field.annotation(false)),
             );
             if let Some(docstring) = field.docstring() {
-                render_docstring(output, level, &docstring);
+                render_preformatted_docstring(output, level, &docstring);
             }
         }
     }
@@ -344,20 +364,39 @@ impl ModelPlan {
         line(output, level + 1, ")-> None:");
         line(output, level + 2, "\"\"\"");
         line(output, level + 2, &format!("{}.", self.name));
-        output.push('\n');
-        line(output, level + 2, &format!("Subclass of {}.", self.base));
-        output.push('\n');
+        output.push_str("\n\n");
+        if let Some(description) = &self.description {
+            for wrapped in wrap_description(description, 100) {
+                line(output, level + 2, &wrapped);
+            }
+            output.push('\n');
+        }
         line(output, level + 2, "Args:");
         for field in &self.fields {
             match field.description.as_deref() {
-                Some(description) if description.contains('\n') => {
-                    line(output, level + 3, &format!("{}:", field.name));
-                    for wrapped in wrap_description(description, 100) {
-                        let _ = writeln!(output, "{}   {wrapped}", "    ".repeat(level + 3));
-                    }
-                }
                 Some(description) => {
-                    line(output, level + 3, &format!("{}: {description}", field.name));
+                    let formatted = wrap_description(description, 100)
+                        .join("\n")
+                        .replace("Example:\n", "Example:  # fmt: skip\n")
+                        .replace("Examples:\n", "Examples:  # fmt: skip\n")
+                        .replace("Note:\n", "Note:  # fmt: skip\n")
+                        .replace("Notes:\n", "Notes:  # fmt: skip\n");
+                    if formatted.contains('\n') {
+                        line(output, level + 3, &format!("{}:", field.name));
+                        for physical_line in formatted.split('\n') {
+                            if physical_line.is_empty() {
+                                output.push('\n');
+                            } else {
+                                let _ = writeln!(
+                                    output,
+                                    "{}   {physical_line}",
+                                    "    ".repeat(level + 3)
+                                );
+                            }
+                        }
+                    } else {
+                        line(output, level + 3, &format!("{}: {formatted}", field.name));
+                    }
                 }
                 None => line(
                     output,
@@ -371,16 +410,29 @@ impl ModelPlan {
     }
 
     fn collect_imports(&self, imports: &mut ImportSet) {
-        imports.class_var = !self.fields.is_empty() || self.allow_other_keys;
+        imports.class_var =
+            !self.fields.is_empty() || !self.class_vars.is_empty() || self.allow_other_keys;
         imports.avd_model = true;
+        match self.base.as_str() {
+            "EosCliConfigGenRootModel" => imports.eos_cli_root = true,
+            "EosDesignsRootModel" => imports.eos_designs_root = true,
+            "Protocol" => imports.protocol = true,
+            _ => {}
+        }
         for class in &self.classes {
             class.collect_imports(imports);
         }
         for field in &self.fields {
+            imports.coerce_type |= field
+                .default
+                .as_deref()
+                .is_some_and(|default| default.contains("coerce_type"));
             if let Some(reference) = &field.external_reference {
-                if reference.starts_with("EosDesigns.") {
+                if reference == "EosDesigns" || reference.starts_with("EosDesigns.") {
                     imports.eos_designs = true;
-                } else if reference.starts_with("EosCliConfigGen.") {
+                } else if reference == "EosCliConfigGen"
+                    || reference.starts_with("EosCliConfigGen.")
+                {
                     imports.eos_cli = true;
                 }
             }
@@ -389,12 +441,19 @@ impl ModelPlan {
 }
 
 #[derive(Clone, Debug)]
+struct ClassVarPlan {
+    name: String,
+    type_hint: String,
+    value: String,
+}
+
+#[derive(Clone, Debug)]
 struct ListPlan {
     name: String,
     base: String,
     item_type: String,
     primary_key: Option<String>,
-    description: String,
+    description: Option<String>,
 }
 
 impl ListPlan {
@@ -404,7 +463,9 @@ impl ListPlan {
             level,
             &format!("class {}({}):", self.name, self.base),
         );
-        render_docstring(output, level + 1, &self.description);
+        if let Some(description) = &self.description {
+            render_docstring(output, level + 1, description);
+        }
         if let Some(primary_key) = &self.primary_key {
             line(
                 output,
@@ -478,11 +539,15 @@ impl FieldPlan {
     }
 
     fn docstring(&self) -> Option<String> {
-        match (&self.description, &self.default) {
+        let description = self
+            .description
+            .as_deref()
+            .map(|description| wrap_description(description, 100).join("\n"));
+        match (description, &self.default) {
             (Some(description), Some(default)) => {
                 Some(format!("{description}\n\nDefault value: `{default}`"))
             }
-            (Some(description), None) => Some(description.clone()),
+            (Some(description), None) => Some(description),
             (None, Some(default)) => Some(format!("Default value: `{default}`")),
             (None, None) => None,
         }
@@ -494,6 +559,7 @@ fn build_node(
     occurrence_id: OccurrenceId,
     name: &str,
     root_keys: Option<&[String]>,
+    base: Option<&str>,
 ) -> ClassPlan {
     let occurrence = graph.occurrence_internal(occurrence_id);
     match occurrence.schema_id() {
@@ -524,14 +590,174 @@ fn build_node(
             }
             ClassPlan::Model(ModelPlan {
                 name: name.to_owned(),
-                base: "AvdModel".to_owned(),
+                base: base.unwrap_or("AvdModel").to_owned(),
+                description: Some(format!("Subclass of {}.", base.unwrap_or("AvdModel"))),
                 classes,
                 fields,
+                class_vars: Vec::new(),
                 allow_other_keys: schema.allow_other_keys,
             })
         }
         _ => unreachable!(),
     }
+}
+
+fn augment_eos_designs_root(
+    graph: &SchemaGraph,
+    root: &mut ClassPlan,
+) -> Result<(), GenerationError> {
+    let ClassPlan::Model(root) = root else {
+        return Ok(());
+    };
+    let root_occurrence = graph.occurrence_internal(graph.root());
+    let OccurrenceKind::Dict { dynamic_keys, .. } = root_occurrence.kind() else {
+        return Ok(());
+    };
+
+    let custom_item_name = "_CustomStructuredConfigurationsItem";
+    root.classes.push(ClassPlan::Model(ModelPlan {
+        name: custom_item_name.to_owned(),
+        base: "AvdModel".to_owned(),
+        description: None,
+        classes: Vec::new(),
+        fields: vec![
+            FieldPlan {
+                name: "key".to_owned(),
+                key: "key".to_owned(),
+                runtime_type: "str".to_owned(),
+                type_hint: "str".to_owned(),
+                optional: false,
+                default: None,
+                description: Some("Complete key including prefix".to_owned()),
+                external_reference: None,
+            },
+            FieldPlan {
+                name: "value".to_owned(),
+                key: "value".to_owned(),
+                runtime_type: "EosCliConfigGen".to_owned(),
+                type_hint: "EosCliConfigGen".to_owned(),
+                optional: false,
+                default: None,
+                description: Some(
+                    "Structured config including the suffix part of the key.".to_owned(),
+                ),
+                external_reference: Some("EosCliConfigGen".to_owned()),
+            },
+        ],
+        class_vars: Vec::new(),
+        allow_other_keys: false,
+    }));
+    root.classes.push(ClassPlan::List(ListPlan {
+        name: "_CustomStructuredConfigurations".to_owned(),
+        base: format!("AvdIndexedList[str, {custom_item_name}]"),
+        item_type: custom_item_name.to_owned(),
+        primary_key: Some("key".to_owned()),
+        description: None,
+    }));
+    root.fields.push(FieldPlan {
+        name: "_custom_structured_configurations".to_owned(),
+        key: "_custom_structured_configurations".to_owned(),
+        runtime_type: "_CustomStructuredConfigurations".to_owned(),
+        type_hint: "_CustomStructuredConfigurations".to_owned(),
+        optional: true,
+        default: None,
+        description: None,
+        external_reference: None,
+    });
+
+    if dynamic_keys.is_empty() {
+        return Ok(());
+    }
+    let mut dynamic_classes = Vec::new();
+    let mut dynamic_fields = Vec::new();
+    let mut dynamic_key_maps = Vec::new();
+    for (dynamic_path, occurrence_id) in dynamic_keys {
+        let occurrence = graph.occurrence_internal(*occurrence_id);
+        let display_name = common(graph.compiled(), occurrence.schema_id())
+            .display_name
+            .as_deref()
+            .ok_or_else(|| GenerationError::MissingMetadata {
+                schema_path: occurrence.path().join("/"),
+                metadata: "display_name",
+            })?;
+        let dynamic_type = display_name.replace(' ', "_").to_lowercase();
+        let model_name = class_name(&format!("dynamic_{dynamic_type}"));
+        dynamic_key_maps.push(format!(
+            "{{'dynamic_keys_path': '{dynamic_path}', 'model_key': '{dynamic_type}'}}"
+        ));
+        let (child_classes, mut value_field) = build_field(
+            graph,
+            *occurrence_id,
+            dynamic_path,
+            &class_name(&dynamic_type),
+            false,
+        );
+        "value".clone_into(&mut value_field.name);
+        value_field.description = Some("Value of dynamic key".to_owned());
+        dynamic_classes.push(ClassPlan::Model(ModelPlan {
+            name: format!("{model_name}Item"),
+            base: "AvdModel".to_owned(),
+            description: None,
+            classes: child_classes,
+            fields: vec![
+                FieldPlan {
+                    name: "key".to_owned(),
+                    key: "key".to_owned(),
+                    runtime_type: "str".to_owned(),
+                    type_hint: "str".to_owned(),
+                    optional: false,
+                    default: None,
+                    description: Some("Key used as dynamic key".to_owned()),
+                    external_reference: None,
+                },
+                value_field,
+            ],
+            class_vars: Vec::new(),
+            allow_other_keys: false,
+        }));
+        dynamic_classes.push(ClassPlan::List(ListPlan {
+            name: model_name.clone(),
+            base: format!("AvdIndexedList[str, {model_name}Item]"),
+            item_type: format!("{model_name}Item"),
+            primary_key: Some("key".to_owned()),
+            description: None,
+        }));
+        dynamic_fields.push(FieldPlan {
+            name: dynamic_type.clone(),
+            key: dynamic_type.clone(),
+            runtime_type: model_name.clone(),
+            type_hint: model_name,
+            optional: false,
+            default: None,
+            description: Some(format!("Collection of dynamic '{dynamic_type}'.")),
+            external_reference: None,
+        });
+    }
+    let tuple_suffix = if dynamic_key_maps.len() == 1 { "," } else { "" };
+    root.classes.push(ClassPlan::Model(ModelPlan {
+        name: "_DynamicKeys".to_owned(),
+        base: "AvdModel".to_owned(),
+        description: Some("Data models for dynamic keys.".to_owned()),
+        classes: dynamic_classes,
+        fields: dynamic_fields,
+        class_vars: vec![ClassVarPlan {
+            name: "_dynamic_key_maps".to_owned(),
+            type_hint: "tuple[dict, ...]".to_owned(),
+            value: format!("({}{tuple_suffix})", dynamic_key_maps.join(", ")),
+        }],
+        allow_other_keys: false,
+    }));
+    root.fields.push(FieldPlan {
+        name: "_dynamic_keys".to_owned(),
+        key: "_dynamic_keys".to_owned(),
+        runtime_type: "_DynamicKeys".to_owned(),
+        type_hint: "_DynamicKeys".to_owned(),
+        optional: false,
+        default: None,
+        description: Some("Dynamic keys".to_owned()),
+        external_reference: None,
+    });
+    Ok(())
 }
 
 fn build_field(
@@ -645,7 +871,7 @@ fn build_field(
                     ),
                 );
             }
-            let class = build_node(graph, occurrence_id, generated_name, None);
+            let class = build_node(graph, occurrence_id, generated_name, None, None);
             (
                 vec![class],
                 field_plan(
@@ -668,14 +894,19 @@ fn build_field(
             let item_name = match (schema.items, items) {
                 (Some(SchemaId::Dict(_)), Some(item_id)) => {
                     let item_name = format!("{generated_name}Item");
-                    let primary_key_name = schema.primary_key.as_deref();
-                    let item = build_dict_item(graph, item_id, &item_name, primary_key_name);
+                    let item =
+                        build_dict_item(graph, item_id, &item_name, schema.primary_key.as_deref());
+                    let indexed_primary_key = if schema.allow_duplicate_primary_key {
+                        None
+                    } else {
+                        schema.primary_key.as_deref()
+                    };
                     let description =
-                        list_description(schema.primary_key.as_deref(), &item_name, graph, item_id);
+                        list_description(indexed_primary_key, &item_name, graph, item_id);
                     let list = list_plan(
                         generated_name,
                         &item_name,
-                        schema.primary_key.as_deref(),
+                        indexed_primary_key,
                         description.clone(),
                         graph,
                         item_id,
@@ -689,7 +920,12 @@ fn build_field(
                         primary_key,
                         None,
                     );
-                    field.description = Some(description);
+                    field.description = Some(combine_descriptions(
+                        common(graph.compiled(), occurrence.schema_id())
+                            .description
+                            .as_deref(),
+                        &description,
+                    ));
                     return (vec![item, ClassPlan::List(list)], field);
                 }
                 (Some(SchemaId::Str(_)), _) => "str".to_owned(),
@@ -703,7 +939,7 @@ fn build_field(
                 base: format!("AvdList[{item_name}]"),
                 item_type: item_name,
                 primary_key: None,
-                description: description.clone(),
+                description: Some(description.clone()),
             };
             let mut field = field_plan(
                 graph,
@@ -714,7 +950,12 @@ fn build_field(
                 primary_key,
                 None,
             );
-            field.description = Some(description);
+            field.description = Some(combine_descriptions(
+                common(graph.compiled(), occurrence.schema_id())
+                    .description
+                    .as_deref(),
+                &description,
+            ));
             (vec![ClassPlan::List(list)], field)
         }
     }
@@ -737,27 +978,35 @@ fn build_dict_item(
     };
     let mut classes = Vec::new();
     let mut fields = Vec::new();
-    for (key, child_id) in keys {
+    let mut ordered_keys = Vec::with_capacity(keys.len());
+    if let Some(primary_key) = primary_key
+        && let Some(primary_key_occurrence) = keys.get(primary_key)
+    {
+        ordered_keys.push((primary_key, primary_key_occurrence));
+    }
+    ordered_keys.extend(
+        keys.iter()
+            .filter(|(key, _)| Some(key.as_str()) != primary_key)
+            .map(|(key, child_occurrence)| (key.as_str(), child_occurrence)),
+    );
+    for (key, child_id) in ordered_keys {
         let child = graph.occurrence_internal(*child_id);
         if is_removed(graph.compiled(), child.schema_id()) {
             continue;
         }
         let child_name = class_name(key);
-        let (mut child_classes, field) = build_field(
-            graph,
-            *child_id,
-            key,
-            &child_name,
-            primary_key == Some(key.as_str()),
-        );
+        let (mut child_classes, field) =
+            build_field(graph, *child_id, key, &child_name, primary_key == Some(key));
         classes.append(&mut child_classes);
         fields.push(field);
     }
     ClassPlan::Model(ModelPlan {
         name: name.to_owned(),
         base: "AvdModel".to_owned(),
+        description: Some("Subclass of AvdModel.".to_owned()),
         classes,
         fields,
+        class_vars: Vec::new(),
         allow_other_keys: schema.allow_other_keys,
     })
 }
@@ -787,8 +1036,8 @@ fn list_plan(
             |_| format!("AvdIndexedList[{primary_key_type}, {item_name}]"),
         ),
         item_type: item_name.to_owned(),
-        primary_key: primary_key.map(ToOwned::to_owned),
-        description,
+        primary_key: primary_key.map(field_name),
+        description: Some(description),
     }
 }
 
@@ -807,7 +1056,8 @@ fn list_description(
                 _ => "str",
             };
             format!(
-                "Subclass of AvdIndexedList with `{item_name}` items. Primary key is `{primary_key}` (`{primary_key_type}`)."
+                "Subclass of AvdIndexedList with `{item_name}` items. Primary key is `{}` (`{primary_key_type}`).",
+                field_name(primary_key)
             )
         }
         None => format!("Subclass of AvdList with `{item_name}` items."),
@@ -824,20 +1074,44 @@ fn field_plan(
     external_reference: Option<String>,
 ) -> FieldPlan {
     let common = common(graph.compiled(), schema_id);
-    let default = common.default.as_ref().map(render_default);
-    let description = common.description.clone().or_else(|| {
-        matches!(schema_id, SchemaId::Dict(_) | SchemaId::List(_))
-            .then(|| auto_description(graph, schema_id, type_hint))
+    let default = common.default.as_ref().map(|value| {
+        let rendered = render_default(value);
+        match schema_id {
+            SchemaId::List(_) => format!("lambda cls: coerce_type({rendered}, target_type=cls)"),
+            SchemaId::Dict(_)
+                if type_hint
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_uppercase()) =>
+            {
+                format!("lambda cls: coerce_type({rendered}, target_type=cls)")
+            }
+            _ => rendered,
+        }
     });
+    let description = match schema_id {
+        SchemaId::Dict(_) | SchemaId::List(_) => Some(combine_descriptions(
+            common.description.as_deref(),
+            &auto_description(graph, schema_id, type_hint),
+        )),
+        _ => common.description.clone(),
+    };
     FieldPlan {
-        name: key.to_owned(),
-        key: key.to_owned(),
+        name: field_name(key),
+        key: schema_key(key),
         runtime_type: runtime_type.to_owned(),
         type_hint: type_hint.to_owned(),
         optional: !common.required && !primary_key,
         default,
         description,
         external_reference,
+    }
+}
+
+fn combine_descriptions(schema_description: Option<&str>, model_description: &str) -> String {
+    match schema_description {
+        Some(description) => format!("{description}\n\n{model_description}"),
+        None => model_description.to_owned(),
     }
 }
 
@@ -921,27 +1195,48 @@ struct ImportSet {
     avd_indexed_list: bool,
     eos_designs: bool,
     eos_cli: bool,
+    eos_designs_root: bool,
+    eos_cli_root: bool,
+    protocol: bool,
+    coerce_type: bool,
 }
 
 fn render_imports(output: &mut String, imports: &ImportSet) {
-    output.push('\n');
+    let mut regular_imports = Vec::new();
     if imports.eos_cli {
-        output.push_str("from pyavd._eos_cli_config_gen.schema import EosCliConfigGen\n");
+        regular_imports.push("from pyavd._eos_cli_config_gen.schema import EosCliConfigGen");
     }
     if imports.eos_designs {
-        output.push_str("from pyavd._eos_designs.schema import EosDesigns\n");
+        regular_imports.push("from pyavd._eos_designs.schema import EosDesigns");
+    }
+    if imports.coerce_type {
+        regular_imports.push("from pyavd._schema.coerce_type import coerce_type");
+    }
+    if imports.eos_cli_root {
+        regular_imports.push(
+            "from pyavd._schema.models.eos_cli_config_gen_root_model import EosCliConfigGenRootModel",
+        );
+    }
+    if imports.eos_designs_root {
+        regular_imports
+            .push("from pyavd._schema.models.eos_designs_root_model import EosDesignsRootModel");
     }
     if imports.class_var {
-        output.push_str("from typing import ClassVar\n");
+        regular_imports.push("from typing import ClassVar");
     }
     if imports.literal {
-        output.push_str("from typing import Literal, TypeAlias\n");
+        regular_imports.push("from typing import Literal, TypeAlias");
     }
-    output.push_str("from typing import TYPE_CHECKING\n");
-    output.push('\n');
-    if imports.avd_indexed_list || imports.avd_list || imports.avd_model {
+    if imports.protocol {
+        regular_imports.push("from typing import Protocol");
+    }
+    regular_imports.push("from typing import TYPE_CHECKING");
+    regular_imports.sort_unstable();
+    for import in regular_imports {
+        output.push_str(import);
         output.push('\n');
     }
+    output.push_str("\n\n");
     if imports.avd_indexed_list {
         output.push_str("from pyavd._schema.models.avd_indexed_list import AvdIndexedList\n");
     }
@@ -955,6 +1250,15 @@ fn render_imports(output: &mut String, imports: &ImportSet) {
     output.push_str("    from pyavd._utils import Undefined, UndefinedType\n");
 }
 
+fn root_base(class_name: &str) -> &str {
+    match class_name {
+        "EosCliConfigGen" => "EosCliConfigGenRootModel",
+        "EosDesigns" => "EosDesignsRootModel",
+        name if name.ends_with("Protocol") => "Protocol",
+        _ => "AvdModel",
+    }
+}
+
 fn class_name(value: &str) -> String {
     value
         .split('_')
@@ -966,6 +1270,19 @@ fn class_name(value: &str) -> String {
                 .unwrap_or_default()
         })
         .collect()
+}
+
+fn schema_key(value: &str) -> String {
+    value.replace(['<', '>'], "").replace('.', "_")
+}
+
+fn field_name(value: &str) -> String {
+    let key = schema_key(value);
+    if is_python_identifier(value) {
+        key
+    } else {
+        format!("field_{key}")
+    }
 }
 
 fn class_name_from_ref(reference: &str) -> String {
@@ -1029,10 +1346,19 @@ fn is_python_identifier(value: &str) -> bool {
 }
 
 fn render_docstring(output: &mut String, level: usize, value: &str) {
+    let formatted = wrap_description(value, 100).join("\n");
+    render_preformatted_docstring(output, level, &formatted);
+}
+
+fn render_preformatted_docstring(output: &mut String, level: usize, value: &str) {
     if value.contains('\n') {
         line(output, level, "\"\"\"");
-        for wrapped in wrap_description(value, 100) {
-            line(output, level, &wrapped);
+        for physical_line in value.split('\n') {
+            if physical_line.is_empty() {
+                output.push('\n');
+            } else {
+                line(output, level, physical_line);
+            }
         }
         line(output, level, "\"\"\"");
     } else {
@@ -1041,35 +1367,106 @@ fn render_docstring(output: &mut String, level: usize, value: &str) {
 }
 
 fn wrap_description(value: &str, width: usize) -> Vec<String> {
-    let mut result = Vec::new();
-    let normalized = value.replace("\n\n", "\n");
-    let mut logical_length: usize = 0;
-    let mut physical = String::new();
-    for (line_index, source_line) in normalized.lines().enumerate() {
-        if line_index > 0 {
-            if !physical.is_empty() {
-                result.push(std::mem::take(&mut physical));
+    let mut chunks = Vec::<String>::new();
+    for character in value.chars() {
+        let whitespace = matches!(
+            character,
+            '\t' | '\n' | '\u{000b}' | '\u{000c}' | '\r' | ' '
+        );
+        match chunks.last_mut() {
+            Some(chunk)
+                if chunk.chars().next().is_some_and(|first| {
+                    matches!(first, '\t' | '\n' | '\u{000b}' | '\u{000c}' | '\r' | ' ')
+                        == whitespace
+                }) =>
+            {
+                chunk.push(character);
             }
-            logical_length = logical_length.saturating_add(1);
-        }
-        for word in source_line.split_whitespace() {
-            let separator = usize::from(!physical.is_empty());
-            if logical_length + separator + word.len() > width {
-                if !physical.is_empty() {
-                    result.push(std::mem::take(&mut physical));
-                }
-                logical_length = 0;
-            }
-            if !physical.is_empty() {
-                physical.push(' ');
-                logical_length += 1;
-            }
-            physical.push_str(word);
-            logical_length += word.len();
+            _ => chunks.push(character.to_string()),
         }
     }
-    if !physical.is_empty() {
-        result.push(physical);
+
+    let mut split_chunks = Vec::new();
+    for chunk in chunks {
+        if chunk.trim().is_empty() {
+            split_chunks.push(chunk);
+        } else {
+            split_chunks.extend(split_hyphenated_chunk(&chunk));
+        }
+    }
+    let mut remaining_chunks = split_chunks;
+    let mut result = Vec::new();
+    let mut position = 0;
+    while position < remaining_chunks.len() {
+        if !result.is_empty() && remaining_chunks[position].trim().is_empty() {
+            position += 1;
+        }
+        let mut line_chunks = Vec::new();
+        let mut line_length = 0;
+        while position < remaining_chunks.len() {
+            let chunk_length = remaining_chunks[position].chars().count();
+            if line_length + chunk_length > width {
+                break;
+            }
+            line_length += chunk_length;
+            line_chunks.push(remaining_chunks[position].clone());
+            position += 1;
+        }
+        if position < remaining_chunks.len() && remaining_chunks[position].chars().count() > width {
+            let available = width.saturating_sub(line_length).max(1);
+            let remainder = remaining_chunks[position]
+                .chars()
+                .skip(available)
+                .collect::<String>();
+            let prefix = remaining_chunks[position]
+                .chars()
+                .take(available)
+                .collect::<String>();
+            line_chunks.push(prefix);
+            remaining_chunks[position] = remainder;
+        }
+        if line_chunks
+            .last()
+            .is_some_and(|chunk| chunk.trim().is_empty())
+        {
+            line_chunks.pop();
+        }
+        if !line_chunks.is_empty() {
+            result.push(line_chunks.concat());
+        }
+    }
+    result
+}
+
+fn split_hyphenated_chunk(chunk: &str) -> Vec<String> {
+    let characters = chunk.char_indices().collect::<Vec<_>>();
+    let mut result = Vec::new();
+    let mut start = 0;
+    for index in 0..characters.len() {
+        if characters[index].1 != '-' {
+            continue;
+        }
+        let valid_prefix = (index >= 2
+            && characters[index - 2].1.is_alphabetic()
+            && characters[index - 1].1.is_alphabetic())
+            || (index >= 3
+                && characters[index - 3].1.is_alphabetic()
+                && characters[index - 2].1 == '-'
+                && characters[index - 1].1.is_alphabetic());
+        let valid_suffix = index + 2 < characters.len()
+            && characters[index + 1].1.is_alphabetic()
+            && (characters[index + 2].1.is_alphabetic()
+                || (characters[index + 2].1 == '-'
+                    && index + 3 < characters.len()
+                    && characters[index + 3].1.is_alphabetic()));
+        if valid_prefix && valid_suffix {
+            let next_index = characters[index + 1].0;
+            result.push(chunk.get(start..next_index).unwrap_or_default().to_owned());
+            start = next_index;
+        }
+    }
+    if start < chunk.len() {
+        result.push(chunk.get(start..).unwrap_or_default().to_owned());
     }
     result
 }

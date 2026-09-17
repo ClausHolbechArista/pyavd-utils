@@ -39,7 +39,7 @@
             },
             "group": {
               "type": "str",
-              "description": "Specify the server group to be used.\n\nThis option is applicable only when the `method` key is explicitly set to `group`."
+              "description": "Specify the server group to be used.\nThis option is applicable only when the `method` key is explicitly set to `group`."
             }
           }
         }
