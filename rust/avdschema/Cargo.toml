@@ -41,10 +41,17 @@ xz2 = { version = "0.1.7", optional = true }
 mmap-guard = { workspace = true, optional = true }
 
 [features]
+# General-purpose native defaults. Lean consumers should opt into only the capabilities they use.
 default = ["gzip", "regex-perf", "yaml"]
+# File-oriented schema authoring and archive generation. This also enables native mmap loading.
 dump_load_files = ["mmap", "dep:walkdir", "gzip", "yaml"]
+# Compile gzip-compressed JSON schema sources into process-owned stores.
 gzip = ["dep:flate2"]
+# Enable the native regex performance accelerators omitted by lean and WASM consumers.
 regex-perf = ["fancy-regex/perf"]
+# Memory-map an existing raw compiled archive on native targets.
 mmap = ["dep:mmap-guard"]
+# Load and dump legacy xz-compressed schema source files.
 xz2 = ["dump_load_files", "dep:xz2"]
+# Load and dump YAML source schemas through serde.
 yaml = ["dep:serde_yaml"]

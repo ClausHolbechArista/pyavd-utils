@@ -7,7 +7,20 @@ from pathlib import Path
 from typing import Literal
 
 def compile_schema_archive(source: Path, destination: Path) -> None:
-    """Compile a raw schema-store file into the archived runtime format."""
+    """
+    Compile a source schema-store file into the archived runtime format.
+
+    The destination is written atomically. Its parent directory must already exist. The resulting
+    file can be memory-mapped by `init_store_from_file`.
+
+    Args:
+        source: Path to the source schema-store file.
+        destination: Path where the compiled archive should be written.
+
+    Raises:
+        RuntimeError: If the source cannot be loaded, the schemas cannot be compiled, or the
+            destination cannot be written.
+    """
 
 def get_list_primary_key(schema_name: Literal["eos_config"], data_path: list[str]) -> str | None:
     """
@@ -32,7 +45,8 @@ def init_store_from_file(file: Path) -> None:
     """
     Initialize the shared Schema store from a compiled schema archive.
 
-    This must be called before using validation or schema-merge APIs that rely on the shared store.
+    The archive is validated and memory-mapped. Initialization can happen only once in each
+    process and must happen before using APIs that rely on the shared schema store.
 
     Args:
         file: Path to the compiled schema archive.

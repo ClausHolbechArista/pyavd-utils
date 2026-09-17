@@ -2,7 +2,12 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Immutable, reference-resolved schema tables intended for zero-copy access.
+//! Compilation into immutable schema tables intended for zero-copy access.
+//!
+//! Compilation follows references and inherited layers, rejects incompatible types and cycles,
+//! and interns identical effective nodes into typed tables. The resulting graph contains no
+//! unresolved schema references. Concrete dynamic keys remain data-dependent and are therefore
+//! resolved by the navigation API instead of this compiler.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -29,8 +34,15 @@ use crate::base::Deprecation;
 use crate::resolve::resolve_ref::resolve_ref;
 use crate::str::Format;
 
+/// Identifies files produced by the AVD schema compiler before rkyv validation is attempted.
 pub(crate) const ARCHIVE_MAGIC: &[u8; 8] = b"AVDSCHM\0";
+/// Version of the complete archived layout and its interpretation.
+///
+/// Increment this whenever a previously generated archive cannot be read with exactly the same
+/// semantics. The version is deliberately independent of the crate version; archives are not
+/// otherwise promised to be portable between arbitrary pyavd-utils releases.
 pub(crate) const ARCHIVE_FORMAT_VERSION: u32 = 1;
+/// Bytes reserved for magic, version, and future header fields before the rkyv root.
 pub(crate) const ARCHIVE_HEADER_LENGTH: usize = 16;
 
 /// Stable identifier of a node in one of the typed schema tables.
@@ -337,20 +349,32 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// A diagnostic describing an invalid schema encountered during compilation.
 #[derive(Debug)]
 pub enum SchemaDiagnostic {
+    /// A schema reference could not be resolved.
     Reference {
+        /// Schema path being compiled.
         schema_path: Vec<String>,
+        /// Full reference string from the source schema.
         reference: String,
+        /// Structured resolver failure.
         error: crate::SchemaResolverError,
     },
+    /// Schema layers declare incompatible model types.
     TypeMismatch {
+        /// Model type established by the first layer.
         expected: &'static str,
+        /// Incompatible model type found in a subsequent layer.
         found: &'static str,
     },
+    /// Following a reference would revisit a layer already being compiled.
     ReferenceCycle {
+        /// Schema path being compiled.
         schema_path: Vec<String>,
+        /// Reference that closes the cycle.
         reference: String,
     },
+    /// Nested schema structure directly or indirectly contains itself.
     StructuralCycle {
+        /// Schema path where the cycle was detected.
         schema_path: Vec<String>,
     },
 }
@@ -388,7 +412,11 @@ impl std::fmt::Display for SchemaDiagnostic {
     }
 }
 
-/// One or more schema diagnostics produced during compilation.
+/// One or more structured schema diagnostics produced during compilation.
+///
+/// The container is intentionally plural so compilation passes can report multiple independent
+/// problems without another API change. Individual compiler paths may still stop at their first
+/// diagnostic; callers must not assume every problem in a source store is returned in one run.
 #[derive(Debug)]
 pub struct SchemaDiagnostics(Vec<SchemaDiagnostic>);
 
@@ -397,6 +425,7 @@ impl SchemaDiagnostics {
         Self(vec![diagnostic])
     }
 
+    /// Iterate over structured diagnostics in reporting order.
     pub fn iter(&self) -> impl Iterator<Item = &SchemaDiagnostic> {
         self.0.iter()
     }
@@ -417,12 +446,16 @@ impl std::fmt::Display for SchemaDiagnostics {
 /// Error raised while compiling or archiving a schema store.
 #[derive(Debug, derive_more::Display)]
 pub enum CompileError {
+    /// One or more source-schema diagnostics prevented compilation.
     #[display("{_0}")]
     InvalidSchema(SchemaDiagnostics),
+    /// A typed table cannot be represented by the archive's `u32` identifiers.
     #[display("Compiled schema table contains more than u32::MAX entries")]
     TableOverflow,
+    /// Serialization into the archived representation failed.
     #[display("Unable to archive compiled schema: {_0}")]
     Archive(String),
+    /// Writing a compiled archive failed.
     Io(std::io::Error),
 }
 

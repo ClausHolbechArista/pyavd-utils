@@ -2,38 +2,14 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Validated, read-only access to an archived compiled schema store.
-
-#![allow(
-    clippy::mem_forget,
-    reason = "self_cell internally uses mem::forget to safely construct its self-referential owner"
-)]
-
-#[cfg(feature = "dump_load_files")]
-use std::path::Path;
-use std::sync::OnceLock;
+//! Typed borrowed views over the immutable compiled schema store.
 
 use fancy_regex::Regex;
-use fancy_regex::RegexBuilder;
-#[cfg(all(feature = "mmap", not(target_family = "wasm")))]
-use mmap_guard::FileData;
-use ordermap::OrderMap;
-use rkyv::rancor::Error as RkyvError;
-use self_cell::self_cell;
 
-use crate::DynamicKeyOverrides;
-use crate::Load as _;
-use crate::SchemaDataMapping;
-use crate::SchemaDataSequence as _;
-use crate::SchemaDataValue as _;
-use crate::StoreSource;
-use crate::compiled::ARCHIVE_FORMAT_VERSION;
-use crate::compiled::ARCHIVE_HEADER_LENGTH;
-use crate::compiled::ARCHIVE_MAGIC;
+use crate::Store;
 use crate::compiled::ArchivedBoolSchema;
 use crate::compiled::ArchivedCompiledDeprecation;
 use crate::compiled::ArchivedCompiledDocumentationOptions;
-use crate::compiled::ArchivedCompiledStore;
 use crate::compiled::ArchivedCompiledStringFormat;
 use crate::compiled::ArchivedCompiledValue;
 use crate::compiled::ArchivedDictSchema;
@@ -41,333 +17,21 @@ use crate::compiled::ArchivedIntSchema;
 use crate::compiled::ArchivedListSchema;
 use crate::compiled::ArchivedSchemaId;
 use crate::compiled::ArchivedStrSchema;
-use crate::compiled::CompiledStore;
 use crate::compiled::SchemaId;
-
-enum ArchiveBytes {
-    #[cfg(all(feature = "mmap", not(target_family = "wasm")))]
-    Mapped(FileData),
-    Owned(rkyv::util::AlignedVec),
-}
-
-impl AsRef<[u8]> for ArchiveBytes {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            #[cfg(all(feature = "mmap", not(target_family = "wasm")))]
-            Self::Mapped(data) => data.as_ref(),
-            Self::Owned(data) => data.as_slice(),
-        }
-    }
-}
-
-struct ArchiveRoot<'a>(&'a ArchivedCompiledStore);
-
-self_cell!(
-    struct ArchiveCell {
-        owner: ArchiveBytes,
-
-        #[covariant]
-        dependent: ArchiveRoot,
-    }
-);
-
-/// Immutable schema archive plus process-local derived caches.
-pub struct Store {
-    archive: ArchiveCell,
-    compiled_patterns: Vec<OnceLock<Result<Regex, String>>>,
-}
-
-impl std::fmt::Debug for Store {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Store")
-            .field("roots", &self.archived().roots.len())
-            .field("compiled_patterns", &self.compiled_patterns.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl Store {
-    /// Load a JSON schema source and compile it into process-owned archived bytes.
-    pub fn from_json(json: &str) -> Result<Self, StoreError> {
-        let source = StoreSource::from_json(json)
-            .map_err(|error| StoreError::InvalidSource(error.to_string()))?;
-        Self::compile(&source)
-    }
-
-    /// Load gzip-compressed JSON schema source and compile it into process-owned archived bytes.
-    #[cfg(feature = "gzip")]
-    pub fn from_gz_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        let source = StoreSource::from_gz_bytes(bytes)
-            .map_err(|error| StoreError::InvalidSource(error.to_string()))?;
-        Self::compile(&source)
-    }
-
-    /// Memory-map and validate a compiled schema archive.
-    #[cfg(all(feature = "mmap", not(target_family = "wasm")))]
-    pub fn from_file(path: &Path) -> Result<Self, StoreError> {
-        let bytes = mmap_guard::map_file(path)?;
-        Self::from_bytes(ArchiveBytes::Mapped(bytes))
-    }
-
-    /// Compile a raw schema store into process-owned archived bytes.
-    pub fn compile(source: &StoreSource) -> Result<Self, StoreError> {
-        let bytes = CompiledStore::compile(source)?.to_bytes()?;
-        Self::from_bytes(ArchiveBytes::Owned(bytes))
-    }
-
-    /// Compile one named root and its reachable schema nodes into owned bytes.
-    pub fn compile_schema(source: &StoreSource, schema_name: &str) -> Result<Self, StoreError> {
-        let bytes = CompiledStore::compile_schema(source, schema_name)?.to_bytes()?;
-        Self::from_bytes(ArchiveBytes::Owned(bytes))
-    }
-
-    /// Compile a source store and atomically write its archived runtime representation.
-    #[cfg(feature = "dump_load_files")]
-    pub fn compile_to_file(source: &StoreSource, destination: &Path) -> Result<(), StoreError> {
-        CompiledStore::compile_to_file(source, destination)?;
-        Ok(())
-    }
-
-    fn from_bytes(bytes: ArchiveBytes) -> Result<Self, StoreError> {
-        let archive = ArchiveCell::try_new(bytes, |bytes| {
-            validate_header(bytes.as_ref())?;
-            rkyv::access::<ArchivedCompiledStore, RkyvError>(bytes.as_ref())
-                .map_err(|error| StoreError::InvalidArchive(error.to_string()))
-                .and_then(|store| {
-                    validate_integrity(store)?;
-                    Ok(ArchiveRoot(store))
-                })
-        })?;
-        let pattern_count = archive.borrow_dependent().0.strings.len();
-        Ok(Self {
-            archive,
-            compiled_patterns: std::iter::repeat_with(OnceLock::new)
-                .take(pattern_count)
-                .collect(),
-        })
-    }
-
-    /// Return the root schema view for a schema name, including AVD aliases.
-    pub fn get(&self, schema_name: &str) -> Option<SchemaView<'_>> {
-        let archived = self.archived();
-        let id = archived.roots.get(schema_name).or_else(|| {
-            let alias = match schema_name {
-                "eos_designs" => "avd_design",
-                "eos_cli_config_gen" => "eos_config",
-                "avd_design" => "eos_designs",
-                "eos_config" => "eos_cli_config_gen",
-                _ => return None,
-            };
-            archived.roots.get(alias)
-        })?;
-        Some(
-            SchemaCursor {
-                store: self,
-                id: native_schema_id(*id),
-            }
-            .view(),
-        )
-    }
-
-    /// Return the primary key for the list schema at a static data path.
-    ///
-    /// Numeric path components traverse list items. This intentionally only
-    /// supports static keys, matching the existing EOS config helper contract.
-    pub fn get_list_primary_key(
-        &self,
-        schema_name: &str,
-        data_path: &[String],
-    ) -> Result<Option<&str>, SchemaPathError> {
-        let empty_data = serde_json::Value::Object(serde_json::Map::new());
-        let Some(view) = self.get_schema_from_path(schema_name, data_path, &empty_data, None)?
-        else {
-            return Ok(None);
-        };
-        Ok(match view {
-            SchemaView::List(schema) => schema.primary_key(),
-            SchemaView::Bool(_) | SchemaView::Int(_) | SchemaView::Str(_) | SchemaView::Dict(_) => {
-                None
-            }
-        })
-    }
-
-    /// Return the effective schema covering a data path.
-    ///
-    /// Dynamic keys are resolved at the root dictionary from the supplied
-    /// data and optional caller overrides. Nested dynamic keys are not
-    /// supported, matching the existing path-helper contract.
-    pub fn get_schema_from_path<'store, 'input, V>(
-        &'store self,
-        schema_name: &str,
-        data_path: &[String],
-        data_value: V,
-        dynamic_key_overrides: Option<&DynamicKeyOverrides>,
-    ) -> Result<Option<SchemaView<'store>>, SchemaPathError>
-    where
-        V: crate::SchemaDataValue<'input>,
-    {
-        let Some(mut view) = self.get(schema_name) else {
-            return Err(SchemaPathError::InvalidSchemaName(schema_name.to_owned()));
-        };
-        let mut path = data_path.iter();
-        let Some(root_key) = path.next() else {
-            return Ok(Some(view));
-        };
-        let SchemaView::Dict(root_schema) = view else {
-            return Err(SchemaPathError::SchemaNotDict);
-        };
-        let input = data_value
-            .as_mapping()
-            .ok_or(SchemaPathError::ValueNotADict)?;
-        view = if let Some(static_schema) = root_schema.key(root_key) {
-            static_schema
-        } else {
-            let dynamic_keys = resolve_dynamic_keys(root_schema, input, dynamic_key_overrides);
-            let Some(dynamic_schema) = dynamic_keys.get(root_key).copied() else {
-                return Ok(None);
-            };
-            dynamic_schema
-        };
-
-        for component in path {
-            view = match view {
-                SchemaView::Dict(schema) => {
-                    let Some(child) = schema.key(component) else {
-                        return Ok(None);
-                    };
-                    child
-                }
-                SchemaView::List(schema) if component.parse::<usize>().is_ok() => {
-                    let Some(items) = schema.items() else {
-                        return Ok(None);
-                    };
-                    items
-                }
-                SchemaView::List(_) => return Ok(None),
-                SchemaView::Bool(_) | SchemaView::Int(_) | SchemaView::Str(_) => {
-                    return Err(SchemaPathError::InvalidTraversal);
-                }
-            };
-        }
-        Ok(Some(view))
-    }
-
-    fn archived(&self) -> &ArchivedCompiledStore {
-        self.archive.borrow_dependent().0
-    }
-
-    fn pattern(&self, index: u32, pattern: &str) -> Result<&Regex, &str> {
-        let Some(cell) = usize::try_from(index)
-            .ok()
-            .and_then(|index| self.compiled_patterns.get(index))
-        else {
-            return Err("string schema index is outside the pattern cache");
-        };
-        cell.get_or_init(|| {
-            RegexBuilder::new(format!("^(?:{pattern})$").as_str())
-                // Keep the Perl classes `\d`, `\s`, and `\w` enabled with ASCII semantics.
-                // This disables their Unicode expansion and properties such as `\p{Greek}`.
-                .unicode_mode(false)
-                .build()
-                .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(String::as_str)
-    }
-}
-
-#[derive(Clone, Debug, derive_more::Display)]
-pub enum SchemaPathError {
-    #[display("Schema name '{_0}' not found in the schema store")]
-    InvalidSchemaName(String),
-    #[display("Root schema is not a dictionary")]
-    SchemaNotDict,
-    #[display("Root data is not a dictionary")]
-    ValueNotADict,
-    #[display("Data path cannot be traversed through this schema node")]
-    InvalidTraversal,
-}
-
-/// Resolve the concrete keys covered by an effective dictionary's dynamic keys.
-///
-/// Input values take precedence over schema defaults. Caller overrides are
-/// applied last. Removed dynamic-key schemas are excluded.
-pub fn resolve_dynamic_keys<'store, 'input, M>(
-    schema: DictView<'store>,
-    input: M,
-    overrides: Option<&DynamicKeyOverrides>,
-) -> OrderMap<String, SchemaView<'store>>
-where
-    M: SchemaDataMapping<'input>,
-{
-    let mut resolved = OrderMap::new();
-    for (path, dynamic_schema) in schema.dynamic_keys() {
-        if dynamic_schema
-            .deprecation()
-            .is_some_and(DeprecationView::removed)
-        {
-            continue;
-        }
-        let values = dynamic_values_at_path(path, input).or_else(|| {
-            schema
-                .default_dynamic_keys(path)
-                .map(|values| values.map(ToOwned::to_owned).collect())
-        });
-        for key in values.into_iter().flatten() {
-            resolved.insert(key, dynamic_schema);
-        }
-    }
-    if let Some(overrides) = overrides {
-        for (concrete_key, path) in overrides {
-            let Some(dynamic_schema) = schema.dynamic_key(path) else {
-                continue;
-            };
-            if dynamic_schema
-                .deprecation()
-                .is_some_and(DeprecationView::removed)
-            {
-                continue;
-            }
-            resolved.insert(concrete_key.clone(), dynamic_schema);
-        }
-    }
-    resolved
-}
-
-fn dynamic_values_at_path<'input, M>(key_path: &str, input: M) -> Option<Vec<String>>
-where
-    M: SchemaDataMapping<'input>,
-{
-    let mut path = key_path.split('.');
-    path.next()
-        .and_then(|root_key| input.get(root_key).map(|value| (root_key, value)))
-        .map(|(root_key, value)| {
-            value
-                .walk(path, Some(&mut vec![root_key.to_owned()]))
-                .into_values()
-                .flat_map(|value| {
-                    if let Some(string) = value.as_str() {
-                        return vec![string.to_owned()];
-                    }
-                    value
-                        .as_sequence()
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| item.as_str().map(ToOwned::to_owned))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .collect()
-        })
-}
 
 /// Internal identifier of one schema node inside an archive.
 #[derive(Clone, Copy, Debug)]
 struct SchemaCursor<'a> {
     store: &'a Store,
     id: SchemaId,
+}
+
+pub(crate) fn schema_view(store: &Store, id: ArchivedSchemaId) -> SchemaView<'_> {
+    SchemaCursor {
+        store,
+        id: native_schema_id(id),
+    }
+    .view()
 }
 
 impl<'a> SchemaCursor<'a> {
@@ -398,14 +62,20 @@ impl<'a> SchemaCursor<'a> {
 /// Typed borrowed view of one schema node in a compiled store.
 #[derive(Clone, Copy, Debug)]
 pub enum SchemaView<'a> {
+    /// Boolean schema.
     Bool(BoolView<'a>),
+    /// Integer schema.
     Int(IntView<'a>),
+    /// String schema.
     Str(StrView<'a>),
+    /// List schema.
     List(ListView<'a>),
+    /// Dictionary schema.
     Dict(DictView<'a>),
 }
 
 impl<'a> SchemaView<'a> {
+    /// Return properties shared by every schema type.
     pub fn common(self) -> CommonView<'a> {
         match self {
             Self::Bool(view) => view.common(),
@@ -416,55 +86,68 @@ impl<'a> SchemaView<'a> {
         }
     }
 
+    /// Return whether a value is required at this schema position.
     pub fn required(self) -> bool {
         self.common().required()
     }
 
+    /// Return the effective deprecation metadata, if any.
     pub fn deprecation(self) -> Option<DeprecationView<'a>> {
         self.common().deprecation()
     }
 
+    /// Return a borrowed view of the schema default without materializing it into input data.
     pub fn default(self) -> Option<SchemaValueView<'a>> {
         self.common().default()
     }
 
+    /// Return the display name, if configured.
     pub fn display_name(self) -> Option<&'a str> {
         self.common().display_name()
     }
 
+    /// Return the description, if configured.
     pub fn description(self) -> Option<&'a str> {
         self.common().description()
     }
 
+    /// Return documentation-generation metadata, if configured.
     pub fn documentation_options(self) -> Option<DocumentationOptionsView<'a>> {
         self.common().documentation_options()
     }
 }
 
+/// Borrowed view of properties shared by every effective schema node.
 #[derive(Clone, Copy, Debug)]
 pub struct CommonView<'a>(&'a crate::compiled::ArchivedCommon);
 
 impl<'a> CommonView<'a> {
+    /// Return whether a value is required at this schema position.
     pub fn required(self) -> bool {
         self.0.required
     }
 
+    /// Return the effective deprecation metadata, if any.
     pub fn deprecation(self) -> Option<DeprecationView<'a>> {
         self.0.deprecation.as_ref().map(DeprecationView)
     }
 
+    /// Return a borrowed view of the schema default.
     pub fn default(self) -> Option<SchemaValueView<'a>> {
         self.0.default.as_ref().map(SchemaValueView::from)
     }
 
+    /// Return the display name, if configured.
     pub fn display_name(self) -> Option<&'a str> {
         self.0.display_name.as_ref().map(AsRef::as_ref)
     }
 
+    /// Return the description, if configured.
     pub fn description(self) -> Option<&'a str> {
         self.0.description.as_ref().map(AsRef::as_ref)
     }
 
+    /// Return documentation-generation metadata, if configured.
     pub fn documentation_options(self) -> Option<DocumentationOptionsView<'a>> {
         self.0
             .documentation_options
@@ -473,40 +156,55 @@ impl<'a> CommonView<'a> {
     }
 }
 
+/// Borrowed view of documentation-generation controls.
 #[derive(Clone, Copy, Debug)]
 pub struct DocumentationOptionsView<'a>(&'a ArchivedCompiledDocumentationOptions);
 
 impl<'a> DocumentationOptionsView<'a> {
+    /// Return the requested documentation table style, if configured.
     pub fn table(self) -> Option<&'a str> {
         self.0.table.as_ref().map(AsRef::as_ref)
     }
 
+    /// Return whether dictionary keys should be hidden from generated documentation.
     pub fn hide_keys(self) -> bool {
         self.0.hide_keys
     }
 }
 
+/// Borrowed JSON-compatible schema value, primarily used for defaults.
 #[derive(Clone, Copy, Debug)]
 pub enum SchemaValueView<'a> {
+    /// JSON null.
     Null,
+    /// Boolean value.
     Bool(bool),
+    /// Signed integer value.
     I64(i64),
+    /// Unsigned integer value.
     U64(u64),
+    /// Floating-point value.
     F64(f64),
+    /// Borrowed string value.
     String(&'a str),
+    /// Borrowed list value.
     List(SchemaListValueView<'a>),
+    /// Borrowed object value.
     Object(SchemaObjectValueView<'a>),
 }
 
+/// Borrowed view of a list-valued schema default.
 #[derive(Clone, Copy, Debug)]
 pub struct SchemaListValueView<'a>(&'a rkyv::vec::ArchivedVec<ArchivedCompiledValue>);
 
 impl<'a> SchemaListValueView<'a> {
+    /// Iterate over the list values without allocating owned values.
     pub fn iter(self) -> impl Iterator<Item = SchemaValueView<'a>> {
         self.0.iter().map(SchemaValueView::from)
     }
 }
 
+/// Borrowed view of an object-valued schema default.
 #[derive(Clone, Copy, Debug)]
 pub struct SchemaObjectValueView<'a>(
     &'a rkyv::vec::ArchivedVec<
@@ -515,6 +213,7 @@ pub struct SchemaObjectValueView<'a>(
 );
 
 impl<'a> SchemaObjectValueView<'a> {
+    /// Iterate over borrowed key-value pairs without allocating owned values.
     pub fn iter(self) -> impl Iterator<Item = (&'a str, SchemaValueView<'a>)> {
         self.0
             .iter()
@@ -537,17 +236,28 @@ impl<'a> From<&'a ArchivedCompiledValue> for SchemaValueView<'a> {
     }
 }
 
+/// Semantic formats supported by string-schema validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StringFormatView {
+    /// IP network in either address family.
     Cidr,
+    /// IP address in either address family.
     Ip,
+    /// IP pool in either address family.
     IpPool,
+    /// IPv4 address.
     Ipv4,
+    /// IPv4 network.
     Ipv4Cidr,
+    /// IPv4 pool.
     Ipv4Pool,
+    /// IPv6 address.
     Ipv6,
+    /// IPv6 network.
     Ipv6Cidr,
+    /// IPv6 pool.
     Ipv6Pool,
+    /// MAC address.
     Mac,
 }
 
@@ -568,44 +278,55 @@ impl From<ArchivedCompiledStringFormat> for StringFormatView {
     }
 }
 
+/// Borrowed view of effective schema deprecation metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct DeprecationView<'a>(&'a ArchivedCompiledDeprecation);
 
 impl<'a> DeprecationView<'a> {
+    /// Return whether use of this schema position should emit a warning.
     pub fn warning(self) -> bool {
         self.0.warning
     }
+    /// Return whether this schema position has been removed.
     pub fn removed(self) -> bool {
         self.0.removed
     }
+    /// Return whether the deprecated and replacement keys may coexist.
     pub fn allow_with_new_key(self) -> bool {
         self.0.allow_with_new_key
     }
+    /// Return the replacement key, if configured.
     pub fn new_key(self) -> Option<&'a str> {
         self.0.new_key.as_ref().map(AsRef::as_ref)
     }
+    /// Return the planned removal version, if configured.
     pub fn remove_in_version(self) -> Option<&'a str> {
         self.0.remove_in_version.as_ref().map(AsRef::as_ref)
     }
+    /// Return the planned removal date, if configured.
     pub fn remove_after_date(self) -> Option<&'a str> {
         self.0.remove_after_date.as_ref().map(AsRef::as_ref)
     }
+    /// Return the migration documentation URL, if configured.
     pub fn url(self) -> Option<&'a str> {
         self.0.url.as_ref().map(AsRef::as_ref)
     }
+    /// Return the upgrade handler name, if configured.
     pub fn upgrade_handler(self) -> Option<&'a str> {
         self.0.upgrade_handler.as_ref().map(AsRef::as_ref)
     }
 }
 
 macro_rules! scalar_view {
-    ($name:ident, $schema:ty) => {
+    ($documentation:literal, $name:ident, $schema:ty) => {
+        #[doc = $documentation]
         #[derive(Clone, Copy, Debug)]
         pub struct $name<'a> {
             schema: &'a $schema,
         }
 
         impl<'a> $name<'a> {
+            /// Return properties shared by every schema type.
             pub fn common(self) -> CommonView<'a> {
                 CommonView(&self.schema.common)
             }
@@ -613,9 +334,18 @@ macro_rules! scalar_view {
     };
 }
 
-scalar_view!(BoolView, ArchivedBoolSchema);
-scalar_view!(IntView, ArchivedIntSchema);
+scalar_view!(
+    "Borrowed view of a boolean schema.",
+    BoolView,
+    ArchivedBoolSchema
+);
+scalar_view!(
+    "Borrowed view of an integer schema.",
+    IntView,
+    ArchivedIntSchema
+);
 
+/// Borrowed view of a string schema.
 #[derive(Clone, Copy, Debug)]
 pub struct StrView<'a> {
     cursor: SchemaCursor<'a>,
@@ -623,30 +353,36 @@ pub struct StrView<'a> {
 }
 
 impl<'a> StrView<'a> {
+    /// Return properties shared by every schema type.
     pub fn common(self) -> CommonView<'a> {
         CommonView(&self.schema.common)
     }
 }
 
 impl<'a> IntView<'a> {
+    /// Return the inclusive minimum value, if constrained.
     pub fn min(self) -> Option<i64> {
         self.schema.min.as_ref().map(|value| value.to_native())
     }
+    /// Return the inclusive maximum value, if constrained.
     pub fn max(self) -> Option<i64> {
         self.schema.max.as_ref().map(|value| value.to_native())
     }
+    /// Iterate over statically permitted values, if constrained.
     pub fn valid_values(self) -> Option<impl Iterator<Item = i64> + 'a> {
         self.schema
             .valid_values
             .as_ref()
             .map(|values| values.iter().map(|value| value.to_native()))
     }
+    /// Iterate over data paths supplying dynamic permitted values.
     pub fn dynamic_valid_values(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .dynamic_valid_values
             .as_ref()
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Iterate over source types accepted for coercion.
     pub fn convert_types(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .convert_types
@@ -656,45 +392,56 @@ impl<'a> IntView<'a> {
 }
 
 impl<'a> StrView<'a> {
+    /// Return whether accepted values are converted to lowercase.
     pub fn convert_to_lower_case(self) -> bool {
         self.schema.convert_to_lower_case
     }
+    /// Return the minimum string length, if constrained.
     pub fn min_length(self) -> Option<u64> {
         self.schema
             .min_length
             .as_ref()
             .map(|value| value.to_native())
     }
+    /// Return the maximum string length, if constrained.
     pub fn max_length(self) -> Option<u64> {
         self.schema
             .max_length
             .as_ref()
             .map(|value| value.to_native())
     }
+    /// Return the source regular-expression pattern, if constrained.
     pub fn pattern(self) -> Option<&'a str> {
         self.schema.pattern.as_ref().map(AsRef::as_ref)
     }
+    /// Iterate over statically permitted values, if constrained.
     pub fn valid_values(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .valid_values
             .as_ref()
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Iterate over data paths supplying dynamic permitted values.
     pub fn dynamic_valid_values(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .dynamic_valid_values
             .as_ref()
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Iterate over source types accepted for coercion.
     pub fn convert_types(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .convert_types
             .as_ref()
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Return the semantic string format, if constrained.
     pub fn format(self) -> Option<StringFormatView> {
         self.schema.format.as_ref().map(|format| (*format).into())
     }
+    /// Return the lazily compiled, fully anchored regular expression.
+    ///
+    /// Compilation failures are cached in the owning [`Store`].
     pub fn compiled_pattern(self) -> Option<Result<&'a Regex, &'a str>> {
         let pattern = self.pattern()?;
         let SchemaId::Str(index) = self.cursor.id else {
@@ -704,6 +451,7 @@ impl<'a> StrView<'a> {
     }
 }
 
+/// Borrowed view of a list schema.
 #[derive(Clone, Copy, Debug)]
 pub struct ListView<'a> {
     cursor: SchemaCursor<'a>,
@@ -711,9 +459,11 @@ pub struct ListView<'a> {
 }
 
 impl<'a> ListView<'a> {
+    /// Return properties shared by every schema type.
     pub fn common(self) -> CommonView<'a> {
         CommonView(&self.schema.common)
     }
+    /// Return the schema for each list item, if configured.
     pub fn items(self) -> Option<SchemaView<'a>> {
         self.schema.items.as_ref().map(|id| {
             SchemaCursor {
@@ -723,32 +473,38 @@ impl<'a> ListView<'a> {
             .view()
         })
     }
+    /// Return the minimum list length, if constrained.
     pub fn min_length(self) -> Option<u64> {
         self.schema
             .min_length
             .as_ref()
             .map(|value| value.to_native())
     }
+    /// Return the maximum list length, if constrained.
     pub fn max_length(self) -> Option<u64> {
         self.schema
             .max_length
             .as_ref()
             .map(|value| value.to_native())
     }
+    /// Return the item key that identifies indexed-list entries, if configured.
     pub fn primary_key(self) -> Option<&'a str> {
         self.schema.primary_key.as_ref().map(AsRef::as_ref)
     }
+    /// Iterate over item keys whose values must be unique, if configured.
     pub fn unique_keys(self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .unique_keys
             .as_ref()
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Return whether duplicate primary-key values are permitted.
     pub fn allow_duplicate_primary_key(self) -> bool {
         self.schema.allow_duplicate_primary_key
     }
 }
 
+/// Borrowed view of a dictionary schema.
 #[derive(Clone, Copy, Debug)]
 pub struct DictView<'a> {
     cursor: SchemaCursor<'a>,
@@ -756,9 +512,11 @@ pub struct DictView<'a> {
 }
 
 impl<'a> DictView<'a> {
+    /// Return properties shared by every schema type.
     pub fn common(self) -> CommonView<'a> {
         CommonView(&self.schema.common)
     }
+    /// Return the schema for a statically declared key.
     pub fn key(self, key: &str) -> Option<SchemaView<'a>> {
         self.schema.keys.get(key).map(|id| {
             SchemaCursor {
@@ -768,6 +526,7 @@ impl<'a> DictView<'a> {
             .view()
         })
     }
+    /// Return the schema associated with a dynamic-key source path.
     pub fn dynamic_key(self, path: &str) -> Option<SchemaView<'a>> {
         self.schema.dynamic_keys.get(path).map(|id| {
             SchemaCursor {
@@ -777,6 +536,7 @@ impl<'a> DictView<'a> {
             .view()
         })
     }
+    /// Iterate over statically declared keys in schema order.
     pub fn keys(self) -> impl Iterator<Item = (&'a str, SchemaView<'a>)> + 'a {
         self.schema.keys.iter().map(|(key, id)| {
             let view = SchemaCursor {
@@ -787,6 +547,7 @@ impl<'a> DictView<'a> {
             (key.as_ref(), view)
         })
     }
+    /// Iterate over dynamic-key source paths in schema order.
     pub fn dynamic_keys(self) -> impl Iterator<Item = (&'a str, SchemaView<'a>)> + 'a {
         self.schema.dynamic_keys.iter().map(|(key, id)| {
             let view = SchemaCursor {
@@ -797,18 +558,22 @@ impl<'a> DictView<'a> {
             (key.as_ref(), view)
         })
     }
+    /// Iterate over default concrete keys for a dynamic-key source path.
     pub fn default_dynamic_keys(self, path: &str) -> Option<impl Iterator<Item = &'a str> + 'a> {
         self.schema
             .default_dynamic_keys
             .get(path)
             .map(|values| values.iter().map(AsRef::as_ref))
     }
+    /// Return whether keys without a matching static or dynamic schema are permitted.
     pub fn allow_other_keys(self) -> bool {
         self.schema.allow_other_keys
     }
+    /// Return whether this node begins relaxed validation for its descendants.
     pub fn begin_relaxed_validation(self) -> bool {
         self.schema.begin_relaxed_validation
     }
+    /// Return whether the dictionary declares any static or dynamic keys.
     pub fn has_schema_keys(self) -> bool {
         !self.schema.keys.is_empty() || !self.schema.dynamic_keys.is_empty()
     }
@@ -842,116 +607,13 @@ fn invalid_schema_id() -> ! {
     panic!("validated schema archive contains an invalid schema id")
 }
 
-#[derive(Debug, derive_more::Display)]
-pub enum StoreError {
-    #[display("Input is not a compiled AVD schema archive")]
-    NotArchive,
-    #[display("Unsupported compiled schema archive version {found}; expected {expected}")]
-    UnsupportedVersion {
-        found: u32,
-        expected: u32,
-    },
-    #[display("Invalid compiled schema archive: {_0}")]
-    InvalidArchive(String),
-    #[display("Invalid schema source: {_0}")]
-    InvalidSource(String),
-    Io(std::io::Error),
-    Compile(crate::compiled::CompileError),
-}
-
-impl From<std::io::Error> for StoreError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<crate::compiled::CompileError> for StoreError {
-    fn from(error: crate::compiled::CompileError) -> Self {
-        Self::Compile(error)
-    }
-}
-
-fn validate_header(bytes: &[u8]) -> Result<(), StoreError> {
-    if bytes.get(..ARCHIVE_MAGIC.len()) != Some(ARCHIVE_MAGIC) {
-        return Err(StoreError::NotArchive);
-    }
-    if bytes.len() < ARCHIVE_HEADER_LENGTH {
-        return Err(StoreError::InvalidArchive(
-            "archive header is truncated".to_owned(),
-        ));
-    }
-    let version_bytes: [u8; 4] = bytes
-        .get(ARCHIVE_MAGIC.len()..ARCHIVE_MAGIC.len() + 4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(StoreError::NotArchive)?;
-    let found = u32::from_le_bytes(version_bytes);
-    if found != ARCHIVE_FORMAT_VERSION {
-        return Err(StoreError::UnsupportedVersion {
-            found,
-            expected: ARCHIVE_FORMAT_VERSION,
-        });
-    }
-    Ok(())
-}
-
-fn validate_integrity(store: &ArchivedCompiledStore) -> Result<(), StoreError> {
-    for id in store.roots.values() {
-        validate_schema_id(store, *id)?;
-    }
-    for schema in store.lists.iter() {
-        if let Some(id) = schema.items.as_ref() {
-            validate_schema_id(store, *id)?;
-        }
-    }
-    for schema in store.dicts.iter() {
-        for id in schema.keys.values().chain(schema.dynamic_keys.values()) {
-            validate_schema_id(store, *id)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_schema_id(
-    store: &ArchivedCompiledStore,
-    id: ArchivedSchemaId,
-) -> Result<(), StoreError> {
-    let valid = match id {
-        ArchivedSchemaId::Bool(index) => {
-            usize::try_from(index.to_native()).is_ok_and(|index| index < store.bools.len())
-        }
-        ArchivedSchemaId::Int(index) => {
-            usize::try_from(index.to_native()).is_ok_and(|index| index < store.ints.len())
-        }
-        ArchivedSchemaId::Str(index) => {
-            usize::try_from(index.to_native()).is_ok_and(|index| index < store.strings.len())
-        }
-        ArchivedSchemaId::List(index) => {
-            usize::try_from(index.to_native()).is_ok_and(|index| index < store.lists.len())
-        }
-        ArchivedSchemaId::Dict(index) => {
-            usize::try_from(index.to_native()).is_ok_and(|index| index < store.dicts.len())
-        }
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(StoreError::InvalidArchive(format!(
-            "schema id {id:?} is outside its typed table"
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::Write as _;
 
-    use indexmap::IndexMap;
     use serde_json::json;
 
     use super::*;
-    use crate::compiled::CompiledStore;
-
     fn metadata_store() -> Store {
         Store::from_json(
             &json!({
@@ -1229,197 +891,5 @@ mod tests {
             };
             assert_eq!(schema.format(), Some(expected));
         }
-    }
-
-    #[test]
-    fn path_navigation_resolves_dynamic_keys_and_static_precedence() {
-        let store = metadata_store();
-        let data = json!({"names": ["dynamic_name"], "name": "configured"});
-        assert!(matches!(
-            store
-                .get_schema_from_path("test", &["dynamic_name".into()], &data, None)
-                .unwrap(),
-            Some(SchemaView::Bool(_))
-        ));
-        assert!(matches!(
-            store
-                .get_schema_from_path("test", &["name".into()], &data, None)
-                .unwrap(),
-            Some(SchemaView::Str(_))
-        ));
-        let overrides = DynamicKeyOverrides::from_iter([("forced".into(), "names".into())]);
-        assert!(matches!(
-            store
-                .get_schema_from_path("test", &["forced".into()], &data, Some(&overrides))
-                .unwrap(),
-            Some(SchemaView::Bool(_))
-        ));
-    }
-
-    #[test]
-    fn path_navigation_reports_invalid_roots_and_traversal() {
-        let store = Store::from_json(
-            r#"{
-                "scalar_root": {"type": "str"},
-                "test": {
-                    "type": "dict",
-                    "keys": {
-                        "scalar": {"type": "str"},
-                        "nested": {"type": "dict", "keys": {}},
-                        "empty_list": {"type": "list"},
-                        "list": {"type": "list", "items": {"type": "bool"}}
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        let mapping = json!({});
-
-        assert!(matches!(
-            store.get_schema_from_path("missing", &[], &mapping, None),
-            Err(SchemaPathError::InvalidSchemaName(name)) if name == "missing"
-        ));
-        assert!(matches!(
-            store.get_schema_from_path("scalar_root", &["child".into()], &mapping, None),
-            Err(SchemaPathError::SchemaNotDict)
-        ));
-        assert!(matches!(
-            store.get_schema_from_path("test", &["scalar".into()], &json!([]), None),
-            Err(SchemaPathError::ValueNotADict)
-        ));
-        assert!(matches!(
-            store.get_schema_from_path(
-                "test",
-                &["nested".into(), "missing".into()],
-                &mapping,
-                None,
-            ),
-            Ok(None)
-        ));
-        assert!(matches!(
-            store.get_schema_from_path("test", &["empty_list".into(), "0".into()], &mapping, None,),
-            Ok(None)
-        ));
-        assert!(matches!(
-            store.get_schema_from_path(
-                "test",
-                &["list".into(), "not_an_index".into()],
-                &mapping,
-                None,
-            ),
-            Ok(None)
-        ));
-        assert!(matches!(
-            store.get_schema_from_path("test", &["scalar".into(), "child".into()], &mapping, None,),
-            Err(SchemaPathError::InvalidTraversal)
-        ));
-    }
-
-    #[test]
-    fn dynamic_key_resolution_excludes_removed_and_invalid_overrides() {
-        let store = Store::from_json(
-            r#"{
-                "test": {
-                    "type": "dict",
-                    "dynamic_keys": {
-                        "active": {"type": "bool"},
-                        "removed": {
-                            "type": "bool",
-                            "deprecation": {"warning": false, "removed": true}
-                        }
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        let Some(SchemaView::Dict(root)) = store.get("test") else {
-            panic!("test root should be a dict")
-        };
-        let input = json!({"active": ["live"], "removed": ["gone"]});
-        let overrides = DynamicKeyOverrides::from_iter([
-            ("forced".into(), "active".into()),
-            ("forced_removed".into(), "removed".into()),
-            ("unknown".into(), "missing".into()),
-        ]);
-
-        let resolved = resolve_dynamic_keys(
-            root,
-            input.as_object().expect("input should be a mapping"),
-            Some(&overrides),
-        );
-        assert_eq!(
-            resolved.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["live", "forced"]
-        );
-    }
-
-    #[test]
-    fn constructors_reject_non_archives_versions_and_invalid_ids() {
-        assert!(matches!(
-            Store::from_bytes(ArchiveBytes::Owned(rkyv::util::AlignedVec::new())),
-            Err(StoreError::NotArchive)
-        ));
-
-        let mut truncated = rkyv::util::AlignedVec::new();
-        truncated.extend_from_slice(ARCHIVE_MAGIC);
-        assert!(matches!(
-            Store::from_bytes(ArchiveBytes::Owned(truncated)),
-            Err(StoreError::InvalidArchive(_))
-        ));
-
-        let mut versioned = CompiledStore::default().to_bytes().unwrap();
-        versioned[ARCHIVE_MAGIC.len()..ARCHIVE_MAGIC.len() + 4]
-            .copy_from_slice(&(ARCHIVE_FORMAT_VERSION + 1).to_le_bytes());
-        assert!(matches!(
-            Store::from_bytes(ArchiveBytes::Owned(versioned)),
-            Err(StoreError::UnsupportedVersion { .. })
-        ));
-
-        let invalid = CompiledStore {
-            roots: IndexMap::from_iter([("invalid".into(), SchemaId::Dict(0))]),
-            ..Default::default()
-        }
-        .to_bytes()
-        .unwrap();
-        assert!(matches!(
-            Store::from_bytes(ArchiveBytes::Owned(invalid)),
-            Err(StoreError::InvalidArchive(_))
-        ));
-    }
-
-    #[cfg(feature = "gzip")]
-    #[test]
-    fn gzip_source_constructor_compiles_runtime_store() {
-        let source = json!({"test": {"type": "bool"}}).to_string();
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        encoder.write_all(source.as_bytes()).unwrap();
-        let bytes = encoder.finish().unwrap();
-        let store = Store::from_gz_bytes(&bytes).unwrap();
-        assert!(matches!(store.get("test"), Some(SchemaView::Bool(_))));
-    }
-
-    #[cfg(all(feature = "mmap", not(target_family = "wasm")))]
-    #[test]
-    fn file_constructor_maps_archives() {
-        let source = crate::utils::test_utils::get_tmp_file(&format!(
-            "archive-source-{}.json",
-            std::process::id()
-        ));
-        let archive = crate::utils::test_utils::get_tmp_file(&format!(
-            "archive-runtime-{}.rkyv",
-            std::process::id()
-        ));
-        std::fs::write(&source, r#"{"test":{"type":"bool"}}"#).unwrap();
-
-        let source_model = StoreSource::from_file(Some(&source)).unwrap();
-        Store::compile_to_file(&source_model, &archive).unwrap();
-        let mapped_store = Store::from_file(&archive).unwrap();
-        assert!(matches!(
-            mapped_store.get("test"),
-            Some(SchemaView::Bool(_))
-        ));
-
-        std::fs::remove_file(source).unwrap();
-        std::fs::remove_file(archive).unwrap();
     }
 }

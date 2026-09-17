@@ -39,6 +39,9 @@ pub(crate) mod _schema_store {
     use super::*;
 
     #[pyfunction]
+    /// Validate and memory-map the process-wide compiled schema store.
+    ///
+    /// Initialization can happen only once per process and must happen before validation.
     pub(crate) fn init_store_from_file(file: PathBuf) -> PyResult<()> {
         info!("Initialize the schema store from file.");
         if STORE.get().is_some() {
@@ -58,6 +61,10 @@ pub(crate) mod _schema_store {
     }
 
     #[pyfunction]
+    /// Compile a source schema-store file into an archived runtime store.
+    ///
+    /// The destination is written atomically and may subsequently be memory-mapped with
+    /// [`init_store_from_file`].
     pub(crate) fn compile_schema_archive(source: PathBuf, destination: PathBuf) -> PyResult<()> {
         let store = StoreSource::from_file(Some(&source)).map_err(|err| {
             PyRuntimeError::new_err(format!(

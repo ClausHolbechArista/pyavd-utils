@@ -3,7 +3,7 @@
 // that can be found in the LICENSE file.
 
 use super::walker::SchemaWalkError;
-use crate::store::SchemaStoreError;
+use crate::source_store::SchemaStoreError;
 
 /// Error encountered while resolving a schema reference.
 #[derive(Debug, derive_more::Display, derive_more::From)]
