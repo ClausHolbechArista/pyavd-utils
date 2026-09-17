@@ -41,6 +41,7 @@ use test_schema_store as _;
 
 mod archive;
 mod compiled;
+#[cfg(feature = "generation")]
 mod generation;
 mod inherit;
 mod resolve;
@@ -69,12 +70,19 @@ pub use self::compiled::CompileError;
 pub use self::compiled::SchemaDiagnostic;
 pub use self::compiled::SchemaDiagnostics;
 pub use self::compiled::SchemaId;
+#[cfg(feature = "generation")]
 pub use self::generation::GenerationError;
+#[cfg(feature = "generation")]
 pub use self::generation::Occurrence;
+#[cfg(feature = "generation")]
 pub use self::generation::OccurrenceId;
+#[cfg(feature = "generation")]
 pub use self::generation::OccurrenceKind;
+#[cfg(feature = "generation")]
 pub use self::generation::SchemaGraph;
+#[cfg(feature = "generation")]
 pub use self::generation::generate_python_models;
+#[cfg(feature = "generation")]
 pub use self::generation::generate_python_models_projection;
 pub use self::inherit::Inherit;
 pub use self::resolve::errors::SchemaResolverError;
