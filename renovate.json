@@ -5,6 +5,9 @@
   ],
   "timezone": "UTC",
   "minimumReleaseAge": "7 days",
+  "gitIgnoredAuthors": [
+    "114827586+autofix-ci[bot]@users.noreply.github.com"
+  ],
   "enabledManagers": [
     "cargo",
     "github-actions",
