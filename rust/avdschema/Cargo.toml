@@ -35,6 +35,7 @@ mmap-guard = { workspace = true, optional = true }
 [features]
 default = ["gzip", "regex-perf", "yaml"]
 dump_load_files = ["mmap", "dep:walkdir", "gzip", "yaml"]
+generation = ["dump_load_files"]
 gzip = ["dep:flate2"]
 regex-perf = ["fancy-regex/perf"]
 mmap = ["dep:mmap-guard"]
