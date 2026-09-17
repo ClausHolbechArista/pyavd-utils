@@ -197,3 +197,28 @@ def test_eos_designs_dynamic_model_requires_display_name(tmp_path: Path) -> None
 
     with pytest.raises(RuntimeError, match=r"requires 'display_name'.*eos_designs/dynamic_keys/selectors.names"):
         generate_python_schema_models_from_paths({"eos_designs": source}, "eos_designs", tmp_path / "eos_designs.py")
+
+
+def test_generation_ignores_unsupported_removed_model(tmp_path: Path) -> None:
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "removed": {
+                            "type": "list",
+                            "deprecation": {"warning": True, "removed": True},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    generated = tmp_path / "model.py"
+
+    generate_python_schema_models(source, "model", generated, "Generated")
+
+    assert '"removed"' not in generated.read_text(encoding="UTF-8")

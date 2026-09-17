@@ -149,6 +149,9 @@ fn validate_supported_occurrence(
     occurrence_id: OccurrenceId,
 ) -> Result<(), GenerationError> {
     let occurrence = graph.occurrence_internal(occurrence_id);
+    if is_removed(graph.compiled(), occurrence.schema_id()) {
+        return Ok(());
+    }
     if occurrence.retained_model_reference().is_some() {
         return Ok(());
     }
