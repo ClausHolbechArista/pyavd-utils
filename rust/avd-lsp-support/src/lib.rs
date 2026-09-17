@@ -7,7 +7,7 @@
 //! This crate is the language server's dependency and feature boundary. Its
 //! default feature graph contains the schema, validation, and YAML APIs used by
 //! the browser WASM build without native compression or regex accelerators.
-//! Native consumers can opt into [`gzip`](#feature-flags) without changing the
+//! Native consumers can opt into `gzip` without changing the
 //! public API imported by the language server.
 //!
 //! The modules below intentionally re-export individual API items instead of
