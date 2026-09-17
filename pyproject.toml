@@ -154,6 +154,7 @@ convention = "google"
   "PLC0415", # `import` should be at the top-level of a file
 ]
 "tests/schema_generation/artifacts/*.py" = ["A002"]
+"tests/schema_generation/artifacts/*.py.expected" = ["A002"]
 
 [tool.ruff.lint.pylint]
 max-args = 15

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Arista Networks, Inc.
+// Use of this source code is governed by the Apache License 2.0
+// that can be found in the LICENSE file.
+
 #![allow(
     clippy::as_conversions,
     clippy::indexing_slicing,
@@ -157,8 +161,11 @@ impl GraphBuilder<'_> {
         let layers = expand_layers(self.store, declared_layers, &path)?;
         let declared = declared_layers.first().copied();
         let declared_reference = declared.and_then(schema_ref).map(ToOwned::to_owned);
-        let retained_model_reference = declared
-            .filter(|schema| retain_model_reference(schema, &layers, self.model_schema_name))
+        let retained_model_reference = layers
+            .iter()
+            .copied()
+            .take_while(|schema| is_pure_reference(schema))
+            .find(|schema| retain_model_reference(schema, &layers, self.model_schema_name))
             .and_then(schema_ref)
             .map(ToOwned::to_owned);
 
