@@ -85,7 +85,7 @@ jobs:
           # Apply LLVM instrumentation to Cargo tests and the PyO3 extension built by pip.
           eval "$(cargo llvm-cov show-env --sh)"
           cargo test --locked --all-targets --all-features
-          python -m pip install -e . "pytest>=8.2.0"
+          python -m pip install -e . --group pytest
           python -m pytest
           cargo llvm-cov report --lcov --output-path lcov.info
         if: |
