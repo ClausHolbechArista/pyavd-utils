@@ -176,7 +176,9 @@ mod tests {
                     "type": "dict",
                     "keys": {
                         "list": {"type": "list"}
-                    }
+                    },
+                    "dynamic_keys": {"dynamic": {"type": "int"}},
+                    "$defs": {"definition": {"type": "str"}}
                 }
             }"#,
         )
@@ -188,12 +190,14 @@ mod tests {
                 SchemaWalkError::PathNotFound { element }
             )) if element == "missing"
         ));
-        assert!(matches!(
-            resolve_ref("test#/keys", &store),
-            Err(SchemaResolverError::SchemaWalk(
-                SchemaWalkError::PointingToKeys
-            ))
-        ));
+        for mapping in ["keys", "dynamic_keys", "$defs"] {
+            assert!(matches!(
+                resolve_ref(&format!("test#/{mapping}"), &store),
+                Err(SchemaResolverError::SchemaWalk(
+                    SchemaWalkError::PointingToMapping { mapping: found }
+                )) if found == mapping
+            ));
+        }
         assert!(matches!(
             resolve_ref("test#/invalid/path", &store),
             Err(SchemaResolverError::SchemaWalk(
