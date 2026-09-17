@@ -131,7 +131,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            SchemaResolverError::SchemaStore(crate::store::SchemaStoreError::InvalidSchemaName(_))
+            SchemaResolverError::SchemaStore(
+                crate::source_store::SchemaStoreError::InvalidSchemaName(_),
+            )
         ));
     }
 
