@@ -148,12 +148,15 @@ struct PythonNode {
 }
 
 impl PythonNode {
-    fn from_occurrence(occurrence: &SchemaOccurrence<'_>) -> Self {
+    fn from_occurrence(
+        occurrence: &SchemaOccurrence<'_>,
+        retained_model_reference: Option<String>,
+    ) -> Self {
         Self {
             relation: occurrence.relation().into(),
             path: occurrence.path().to_vec(),
             schema_id: occurrence.schema_id(),
-            retained_model_reference: occurrence.retained_model_reference().map(ToOwned::to_owned),
+            retained_model_reference,
             keys: IndexMap::new(),
             dynamic_keys: IndexMap::new(),
             items: None,
@@ -267,7 +270,8 @@ impl SchemaVisitor for PythonProjection<'_> {
             return Ok(TraversalControl::SkipChildren);
         }
 
-        let control = if occurrence.retained_model_reference().is_some() {
+        let retained_model_reference = retained_model_reference(occurrence, self.schema_name);
+        let control = if retained_model_reference.is_some() {
             TraversalControl::SkipChildren
         } else {
             match occurrence.schema_id() {
@@ -299,8 +303,10 @@ impl SchemaVisitor for PythonProjection<'_> {
             }
             TraversalControl::Descend
         };
-        self.stack
-            .push(Some(PythonNode::from_occurrence(occurrence)));
+        self.stack.push(Some(PythonNode::from_occurrence(
+            occurrence,
+            retained_model_reference,
+        )));
         Ok(control)
     }
 
@@ -322,6 +328,33 @@ impl SchemaVisitor for PythonProjection<'_> {
         }
         Ok(())
     }
+}
+
+/// Select a pure cross-schema reference represented by an existing Python model.
+fn retained_model_reference(
+    occurrence: &SchemaOccurrence<'_>,
+    model_schema_name: &str,
+) -> Option<String> {
+    let retain_reference = match occurrence.schema_id() {
+        SchemaId::Dict(_) => true,
+        SchemaId::List(_) => occurrence
+            .list()
+            .is_some_and(|list| list.primary_key.is_some() && !list.allow_duplicate_primary_key),
+        SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => false,
+    };
+    retain_reference.then(|| {
+        occurrence
+            .pure_references()
+            .iter()
+            .copied()
+            .find(|reference| {
+                reference
+                    .split_once('#')
+                    .is_some_and(|(schema_name, _)| schema_name != model_schema_name)
+                    && !reference.contains("/$defs/")
+            })
+            .map(ToOwned::to_owned)
+    })?
 }
 
 #[derive(Clone, Debug)]

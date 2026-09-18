@@ -55,7 +55,7 @@ pub(crate) enum TraversalControl {
 /// Effective schema data and source context for one visited occurrence.
 ///
 /// The effective data comes from the deduplicated compiled store. The path and
-/// retained-model decision describe this particular use-site and therefore
+/// leading reference layers describe this particular use-site and therefore
 /// cannot be stored on the compiled node itself.
 #[derive(Debug)]
 pub(crate) struct SchemaOccurrence<'a> {
@@ -63,7 +63,7 @@ pub(crate) struct SchemaOccurrence<'a> {
     path: &'a [String],
     relation: SchemaRelation<'a>,
     schema_id: SchemaId,
-    retained_model_reference: Option<&'a str>,
+    pure_references: Vec<&'a str>,
 }
 
 impl<'a> SchemaOccurrence<'a> {
@@ -82,13 +82,12 @@ impl<'a> SchemaOccurrence<'a> {
         self.schema_id
     }
 
-    /// Reference represented by an existing generated Python model.
+    /// Leading reference-only layers contributing to this occurrence.
     ///
-    /// This is generation policy derived from the occurrence. Consumers that
-    /// retain the referenced model can skip descendants without losing local
-    /// required/default metadata from the effective node.
-    pub(crate) fn retained_model_reference(&self) -> Option<&str> {
-        self.retained_model_reference
+    /// Consumers decide whether a reference has an existing representation or
+    /// whether traversal should continue into its effective children.
+    pub(crate) fn pure_references(&self) -> &[&str] {
+        &self.pure_references
     }
 
     /// Properties shared by every effective schema type.
@@ -202,18 +201,18 @@ impl<'a> SchemaTraverser<'a> {
         visitor: &mut V,
     ) -> Result<(), V::Error> {
         let layers = expand_layers(self.source, declared_layers, &path)?;
-        let retained_model_reference = layers
+        let pure_references = layers
             .iter()
             .copied()
             .take_while(|schema| is_pure_reference(schema))
-            .find(|schema| retain_model_reference(schema, &layers, self.schema_name))
-            .and_then(schema_ref);
+            .filter_map(schema_ref)
+            .collect();
         let occurrence = SchemaOccurrence {
             compiled: &self.compiled,
             path: &path,
             relation,
             schema_id,
-            retained_model_reference,
+            pure_references,
         };
 
         if visitor.enter(&occurrence)? == TraversalControl::Descend {
@@ -362,42 +361,6 @@ fn expand_layers<'a>(
     Ok(result)
 }
 
-fn retain_model_reference(
-    declared: &SourceSchema,
-    effective_layers: &[&SourceSchema],
-    model_schema_name: &str,
-) -> bool {
-    let Some(reference) = schema_ref(declared) else {
-        return false;
-    };
-    let foreign_reference = reference
-        .split_once('#')
-        .is_some_and(|(schema_name, _)| schema_name != model_schema_name);
-    if !foreign_reference || reference.contains("/$defs/") || !is_pure_reference(declared) {
-        return false;
-    }
-    match declared {
-        SourceSchema::Dict(_) => true,
-        SourceSchema::List(_) => {
-            effective_layers
-                .iter()
-                .find_map(|schema| match schema {
-                    SourceSchema::List(schema) => schema.primary_key.as_ref(),
-                    _ => None,
-                })
-                .is_some()
-                && !effective_layers
-                    .iter()
-                    .find_map(|schema| match schema {
-                        SourceSchema::List(schema) => schema.allow_duplicate_primary_key,
-                        _ => None,
-                    })
-                    .unwrap_or_default()
-        }
-        _ => false,
-    }
-}
-
 fn is_pure_reference(schema: &SourceSchema) -> bool {
     match schema {
         SourceSchema::Bool(schema) => base_is_pure(&schema.base),
@@ -496,7 +459,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingVisitor {
-        visits: Vec<(Vec<String>, Option<String>)>,
+        visits: Vec<(Vec<String>, Vec<String>)>,
     }
 
     impl SchemaVisitor for RecordingVisitor {
@@ -508,7 +471,11 @@ mod tests {
         ) -> Result<TraversalControl, Self::Error> {
             self.visits.push((
                 occurrence.path().to_vec(),
-                occurrence.retained_model_reference().map(ToOwned::to_owned),
+                occurrence
+                    .pure_references()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
             ));
             if occurrence.relation() == SchemaRelation::Key("first") {
                 Ok(TraversalControl::SkipChildren)
@@ -548,14 +515,14 @@ mod tests {
         assert_eq!(
             visitor.visits,
             vec![
-                (vec!["model".to_owned()], None),
+                (vec!["model".to_owned()], Vec::new()),
                 (
                     vec!["model".to_owned(), "keys".to_owned(), "first".to_owned()],
-                    Some("shared#".to_owned()),
+                    vec!["shared#".to_owned()],
                 ),
                 (
                     vec!["model".to_owned(), "keys".to_owned(), "second".to_owned()],
-                    Some("shared#".to_owned()),
+                    vec!["shared#".to_owned()],
                 ),
                 (
                     vec![
@@ -565,7 +532,7 @@ mod tests {
                         "keys".to_owned(),
                         "value".to_owned(),
                     ],
-                    None,
+                    Vec::new(),
                 ),
             ]
         );
