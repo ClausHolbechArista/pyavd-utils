@@ -2,6 +2,14 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
+//! Python source generation compatible with pyAVD's nested schema models.
+//!
+//! A traversal first validates the subset supported by this generator and
+//! builds a Python-specific projection. Rendering then converts that projection
+//! into explicit class, field, literal, and import plans. Keeping rendering
+//! plans separate from schema traversal makes output conventions independent of
+//! how effective schema occurrences are discovered.
+
 #![allow(
     clippy::as_conversions,
     clippy::indexing_slicing,
@@ -14,14 +22,18 @@
 
 use std::fmt::Write as _;
 
+use indexmap::IndexMap;
+
 use crate::CompileError;
-use crate::SchemaGraph;
 use crate::StoreSource;
 use crate::compiled::CompiledStore;
 use crate::compiled::CompiledValue;
 use crate::compiled::SchemaId;
-use crate::generation::OccurrenceId;
-use crate::generation::OccurrenceKind;
+use crate::generation::traversal::SchemaOccurrence;
+use crate::generation::traversal::SchemaRelation;
+use crate::generation::traversal::SchemaTraverser;
+use crate::generation::traversal::SchemaVisitor;
+use crate::generation::traversal::TraversalControl;
 
 const HEADER: &str = "# Copyright (c) 2026 Arista Networks, Inc.\n\
 # Use of this source code is governed by the Apache License 2.0\n\
@@ -93,43 +105,18 @@ pub fn generate_python_models_projection(
     generated_class_name: &str,
     root_keys: &[String],
 ) -> Result<String, GenerationError> {
-    let graph = SchemaGraph::compile(store, schema_name)?;
-    let root_occurrence = graph.occurrence_internal(graph.root());
-    let OccurrenceKind::Dict { keys, dynamic_keys } = root_occurrence.kind() else {
-        return Err(GenerationError::RootType {
-            schema_name: schema_name.to_owned(),
-            found: runtime_type(root_occurrence.schema_id()),
-        });
-    };
-    if !dynamic_keys.is_empty() && generated_class_name != "EosDesigns" {
-        return Err(GenerationError::Unsupported {
-            schema_path: root_occurrence.path().join("/"),
-            feature: "dynamic keys",
-        });
-    }
-    if let Some(root_key) = root_keys
-        .iter()
-        .find(|root_key| !keys.contains_key(root_key.as_str()))
-    {
-        return Err(GenerationError::UnknownRootKey {
-            schema_name: schema_name.to_owned(),
-            root_key: root_key.clone(),
-        });
-    }
-    for (root_key, occurrence_id) in keys {
-        if root_keys.is_empty() || root_keys.iter().any(|selected| selected == root_key) {
-            validate_supported_occurrence(&graph, *occurrence_id)?;
-        }
-    }
+    let traverser = SchemaTraverser::compile(store, schema_name)?;
+    let mut projection = PythonProjection::new(schema_name, generated_class_name, root_keys);
+    traverser.traverse(&mut projection)?;
+    let root_node = projection.finish();
     let mut root = build_node(
-        &graph,
-        graph.root(),
+        traverser.compiled(),
+        &root_node,
         generated_class_name,
-        (!root_keys.is_empty()).then_some(root_keys),
         Some(root_base(generated_class_name)),
     );
     if generated_class_name == "EosDesigns" {
-        augment_eos_designs_root(&graph, &mut root)?;
+        augment_eos_designs_root(traverser.compiled(), &root_node, &mut root)?;
     }
     let mut imports = ImportSet::default();
     root.collect_imports(&mut imports);
@@ -144,56 +131,201 @@ pub fn generate_python_models_projection(
     Ok(output)
 }
 
-fn validate_supported_occurrence(
-    graph: &SchemaGraph,
-    occurrence_id: OccurrenceId,
-) -> Result<(), GenerationError> {
-    let occurrence = graph.occurrence_internal(occurrence_id);
-    if is_removed(graph.compiled(), occurrence.schema_id()) {
-        return Ok(());
-    }
-    if occurrence.retained_model_reference().is_some() {
-        return Ok(());
-    }
-    let unsupported = |feature| GenerationError::Unsupported {
-        schema_path: occurrence.path().join("/"),
-        feature,
-    };
-    match occurrence.schema_id() {
-        SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => {}
-        SchemaId::List(_) => {
-            let OccurrenceKind::List { items } = occurrence.kind() else {
-                return Err(unsupported("a list occurrence without list children"));
-            };
-            let Some(items) = items else {
-                return Err(unsupported("lists without an item schema"));
-            };
-            if matches!(
-                graph.occurrence_internal(*items).schema_id(),
-                SchemaId::List(_)
-            ) {
-                return Err(unsupported("nested lists"));
-            }
-            validate_supported_occurrence(graph, *items)?;
-        }
-        SchemaId::Dict(_) => {
-            let OccurrenceKind::Dict { keys, dynamic_keys } = occurrence.kind() else {
-                return Err(unsupported(
-                    "a dictionary occurrence without dictionary children",
-                ));
-            };
-            if !dynamic_keys.is_empty() {
-                return Err(unsupported("dynamic keys"));
-            }
-            for child in keys.values() {
-                validate_supported_occurrence(graph, *child)?;
-            }
+/// Generator-specific projection of one visited schema occurrence.
+///
+/// The projection owns only nodes that Python model generation consumes.
+/// Removed fields, unselected root keys, and descendants represented by an
+/// existing referenced model are pruned while traversal is in progress.
+#[derive(Clone, Debug)]
+struct PythonNode {
+    relation: OwnedRelation,
+    path: Vec<String>,
+    schema_id: SchemaId,
+    retained_model_reference: Option<String>,
+    keys: IndexMap<String, PythonNode>,
+    dynamic_keys: IndexMap<String, PythonNode>,
+    items: Option<Box<PythonNode>>,
+}
+
+impl PythonNode {
+    fn from_occurrence(occurrence: &SchemaOccurrence<'_>) -> Self {
+        Self {
+            relation: occurrence.relation().into(),
+            path: occurrence.path().to_vec(),
+            schema_id: occurrence.schema_id(),
+            retained_model_reference: occurrence.retained_model_reference().map(ToOwned::to_owned),
+            keys: IndexMap::new(),
+            dynamic_keys: IndexMap::new(),
+            items: None,
         }
     }
-    Ok(())
+
+    fn attach(&mut self, child: Self) {
+        match &child.relation {
+            OwnedRelation::Root => unreachable!(),
+            OwnedRelation::Key(name) => {
+                self.keys.insert(name.clone(), child);
+            }
+            OwnedRelation::DynamicKey(name) => {
+                self.dynamic_keys.insert(name.clone(), child);
+            }
+            OwnedRelation::Items => self.items = Some(Box::new(child)),
+        }
+    }
+}
+
+/// Owned form of [`SchemaRelation`] retained in the Python output plan.
+#[derive(Clone, Debug)]
+enum OwnedRelation {
+    Root,
+    Key(String),
+    DynamicKey(String),
+    Items,
+}
+
+impl From<SchemaRelation<'_>> for OwnedRelation {
+    fn from(value: SchemaRelation<'_>) -> Self {
+        match value {
+            SchemaRelation::Root => Self::Root,
+            SchemaRelation::Key(name) => Self::Key(name.to_owned()),
+            SchemaRelation::DynamicKey(name) => Self::DynamicKey(name.to_owned()),
+            SchemaRelation::Items => Self::Items,
+        }
+    }
+}
+
+/// Builds and validates the minimal occurrence tree needed by Python rendering.
+struct PythonProjection<'a> {
+    schema_name: &'a str,
+    generated_class_name: &'a str,
+    root_keys: &'a [String],
+    stack: Vec<Option<PythonNode>>,
+    root: Option<PythonNode>,
+}
+
+impl<'a> PythonProjection<'a> {
+    fn new(schema_name: &'a str, generated_class_name: &'a str, root_keys: &'a [String]) -> Self {
+        Self {
+            schema_name,
+            generated_class_name,
+            root_keys,
+            stack: Vec::new(),
+            root: None,
+        }
+    }
+
+    fn finish(self) -> PythonNode {
+        match self.root {
+            Some(root) => root,
+            None => unreachable!("traversal always visits and completes the compiled root"),
+        }
+    }
+
+    fn unsupported(occurrence: &SchemaOccurrence<'_>, feature: &'static str) -> GenerationError {
+        GenerationError::Unsupported {
+            schema_path: occurrence.path().join("/"),
+            feature,
+        }
+    }
+}
+
+impl SchemaVisitor for PythonProjection<'_> {
+    type Error = GenerationError;
+
+    fn enter(
+        &mut self,
+        occurrence: &SchemaOccurrence<'_>,
+    ) -> Result<TraversalControl, Self::Error> {
+        if occurrence.relation() == SchemaRelation::Root {
+            let Some(dict) = occurrence.dict() else {
+                return Err(GenerationError::RootType {
+                    schema_name: self.schema_name.to_owned(),
+                    found: runtime_type(occurrence.schema_id()),
+                });
+            };
+            if let Some(root_key) = self
+                .root_keys
+                .iter()
+                .find(|root_key| !dict.keys.contains_key(root_key.as_str()))
+            {
+                return Err(GenerationError::UnknownRootKey {
+                    schema_name: self.schema_name.to_owned(),
+                    root_key: root_key.clone(),
+                });
+            }
+        } else if self.stack.len() == 1
+            && let SchemaRelation::Key(name) = occurrence.relation()
+            && !self.root_keys.is_empty()
+            && !self.root_keys.iter().any(|selected| selected == name)
+        {
+            self.stack.push(None);
+            return Ok(TraversalControl::SkipChildren);
+        }
+
+        if occurrence.relation() != SchemaRelation::Root && is_removed_common(occurrence.common()) {
+            self.stack.push(None);
+            return Ok(TraversalControl::SkipChildren);
+        }
+
+        let control = if occurrence.retained_model_reference().is_some() {
+            TraversalControl::SkipChildren
+        } else {
+            match occurrence.schema_id() {
+                SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => {}
+                SchemaId::List(_) => {
+                    let Some(list) = occurrence.list() else {
+                        unreachable!("SchemaId identifies a list");
+                    };
+                    let Some(items) = list.items else {
+                        return Err(Self::unsupported(
+                            occurrence,
+                            "lists without an item schema",
+                        ));
+                    };
+                    if matches!(items, SchemaId::List(_)) {
+                        return Err(Self::unsupported(occurrence, "nested lists"));
+                    }
+                }
+                SchemaId::Dict(_) => {
+                    let Some(dict) = occurrence.dict() else {
+                        unreachable!("SchemaId identifies a dictionary");
+                    };
+                    let root_dynamic_keys = occurrence.relation() == SchemaRelation::Root
+                        && self.generated_class_name == "EosDesigns";
+                    if !dict.dynamic_keys.is_empty() && !root_dynamic_keys {
+                        return Err(Self::unsupported(occurrence, "dynamic keys"));
+                    }
+                }
+            }
+            TraversalControl::Descend
+        };
+        self.stack
+            .push(Some(PythonNode::from_occurrence(occurrence)));
+        Ok(control)
+    }
+
+    fn leave(&mut self, _occurrence: &SchemaOccurrence<'_>) -> Result<(), Self::Error> {
+        let completed = match self.stack.pop() {
+            Some(completed) => completed,
+            None => unreachable!("leave is paired with every successful enter"),
+        };
+        let Some(completed) = completed else {
+            return Ok(());
+        };
+        if let Some(parent) = self.stack.last_mut() {
+            let Some(parent) = parent.as_mut() else {
+                unreachable!("traversal never descends below a pruned occurrence");
+            };
+            parent.attach(completed);
+        } else {
+            self.root = Some(completed);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
+/// Renderable plan for one nested Python class declaration.
 enum ClassPlan {
     Model(ModelPlan),
     List(ListPlan),
@@ -219,6 +351,7 @@ impl ClassPlan {
 }
 
 #[derive(Clone, Debug)]
+/// Python model class with its nested declarations and schema-backed fields.
 struct ModelPlan {
     name: String,
     base: String,
@@ -444,6 +577,7 @@ impl ModelPlan {
 }
 
 #[derive(Clone, Debug)]
+/// Class-level variable emitted as part of a generated model.
 struct ClassVarPlan {
     name: String,
     type_hint: String,
@@ -451,6 +585,7 @@ struct ClassVarPlan {
 }
 
 #[derive(Clone, Debug)]
+/// Generated list model and its item-type contract.
 struct ListPlan {
     name: String,
     base: String,
@@ -495,6 +630,7 @@ impl ListPlan {
 }
 
 #[derive(Clone, Debug)]
+/// Type alias constraining a scalar field to literal schema values.
 struct LiteralPlan {
     name: String,
     values: Vec<String>,
@@ -515,6 +651,7 @@ impl LiteralPlan {
 }
 
 #[derive(Clone, Debug)]
+/// Python field metadata used for annotations, defaults, and docstrings.
 struct FieldPlan {
     name: String,
     key: String,
@@ -558,36 +695,21 @@ impl FieldPlan {
 }
 
 fn build_node(
-    graph: &SchemaGraph,
-    occurrence_id: OccurrenceId,
+    compiled: &CompiledStore,
+    node: &PythonNode,
     name: &str,
-    root_keys: Option<&[String]>,
     base: Option<&str>,
 ) -> ClassPlan {
-    let occurrence = graph.occurrence_internal(occurrence_id);
-    match occurrence.schema_id() {
+    match node.schema_id {
         SchemaId::Dict(index) => {
-            let schema = &graph.compiled().dicts[index as usize];
-            let keys = match occurrence.kind() {
-                OccurrenceKind::Dict { keys, .. } => keys,
-                _ => unreachable!(),
-            };
+            let schema = &compiled.dicts[index as usize];
             let mut classes = Vec::new();
             let mut fields = Vec::new();
-            for (key, child_id) in keys {
-                if root_keys
-                    .is_some_and(|root_keys| !root_keys.iter().any(|selected| selected == key))
-                {
-                    continue;
-                }
-                let child = graph.occurrence_internal(*child_id);
-                if is_removed(graph.compiled(), child.schema_id()) {
-                    continue;
-                }
+            for (key, child) in &node.keys {
                 let child_name = class_name(key);
                 let is_primary_key = false;
                 let (mut child_classes, field) =
-                    build_field(graph, *child_id, key, &child_name, is_primary_key);
+                    build_field(compiled, child, key, &child_name, is_primary_key);
                 classes.append(&mut child_classes);
                 fields.push(field);
             }
@@ -606,17 +728,13 @@ fn build_node(
 }
 
 fn augment_eos_designs_root(
-    graph: &SchemaGraph,
+    compiled: &CompiledStore,
+    root_node: &PythonNode,
     root: &mut ClassPlan,
 ) -> Result<(), GenerationError> {
     let ClassPlan::Model(root) = root else {
         return Ok(());
     };
-    let root_occurrence = graph.occurrence_internal(graph.root());
-    let OccurrenceKind::Dict { dynamic_keys, .. } = root_occurrence.kind() else {
-        return Ok(());
-    };
-
     let custom_item_name = "_CustomStructuredConfigurationsItem";
     root.classes.push(ClassPlan::Model(ModelPlan {
         name: custom_item_name.to_owned(),
@@ -668,19 +786,18 @@ fn augment_eos_designs_root(
         external_reference: None,
     });
 
-    if dynamic_keys.is_empty() {
+    if root_node.dynamic_keys.is_empty() {
         return Ok(());
     }
     let mut dynamic_classes = Vec::new();
     let mut dynamic_fields = Vec::new();
     let mut dynamic_key_maps = Vec::new();
-    for (dynamic_path, occurrence_id) in dynamic_keys {
-        let occurrence = graph.occurrence_internal(*occurrence_id);
-        let display_name = common(graph.compiled(), occurrence.schema_id())
+    for (dynamic_path, node) in &root_node.dynamic_keys {
+        let display_name = common(compiled, node.schema_id)
             .display_name
             .as_deref()
             .ok_or_else(|| GenerationError::MissingMetadata {
-                schema_path: occurrence.path().join("/"),
+                schema_path: node.path.join("/"),
                 metadata: "display_name",
             })?;
         let dynamic_type = display_name.replace(' ', "_").to_lowercase();
@@ -689,8 +806,8 @@ fn augment_eos_designs_root(
             "{{'dynamic_keys_path': '{dynamic_path}', 'model_key': '{dynamic_type}'}}"
         ));
         let (child_classes, mut value_field) = build_field(
-            graph,
-            *occurrence_id,
+            compiled,
+            node,
             dynamic_path,
             &class_name(&dynamic_type),
             false,
@@ -764,18 +881,17 @@ fn augment_eos_designs_root(
 }
 
 fn build_field(
-    graph: &SchemaGraph,
-    occurrence_id: OccurrenceId,
+    compiled: &CompiledStore,
+    node: &PythonNode,
     key: &str,
     generated_name: &str,
     primary_key: bool,
 ) -> (Vec<ClassPlan>, FieldPlan) {
-    let occurrence = graph.occurrence_internal(occurrence_id);
-    if let Some(reference) = occurrence.retained_model_reference() {
+    if let Some(reference) = &node.retained_model_reference {
         let reference_name = class_name_from_ref(reference);
         let mut field = field_plan(
-            graph,
-            occurrence.schema_id(),
+            compiled,
+            node.schema_id,
             key,
             &reference_name,
             &reference_name,
@@ -784,15 +900,15 @@ fn build_field(
         );
         field
             .description
-            .clone_from(&common(graph.compiled(), occurrence.schema_id()).description);
+            .clone_from(&common(compiled, node.schema_id).description);
         return (Vec::new(), field);
     }
-    match occurrence.schema_id() {
+    match node.schema_id {
         SchemaId::Bool(_) => (
             Vec::new(),
             field_plan(
-                graph,
-                occurrence.schema_id(),
+                compiled,
+                node.schema_id,
                 key,
                 "bool",
                 "bool",
@@ -801,7 +917,7 @@ fn build_field(
             ),
         ),
         SchemaId::Int(index) => {
-            let schema = &graph.compiled().ints[index as usize];
+            let schema = &compiled.ints[index as usize];
             let classes = schema
                 .valid_values
                 .as_ref()
@@ -819,8 +935,8 @@ fn build_field(
             (
                 classes,
                 field_plan(
-                    graph,
-                    occurrence.schema_id(),
+                    compiled,
+                    node.schema_id,
                     key,
                     "int",
                     type_hint,
@@ -830,7 +946,7 @@ fn build_field(
             )
         }
         SchemaId::Str(index) => {
-            let schema = &graph.compiled().strings[index as usize];
+            let schema = &compiled.strings[index as usize];
             let classes = schema
                 .valid_values
                 .as_ref()
@@ -848,8 +964,8 @@ fn build_field(
             (
                 classes,
                 field_plan(
-                    graph,
-                    occurrence.schema_id(),
+                    compiled,
+                    node.schema_id,
                     key,
                     "str",
                     type_hint,
@@ -859,13 +975,13 @@ fn build_field(
             )
         }
         SchemaId::Dict(index) => {
-            let schema = &graph.compiled().dicts[index as usize];
+            let schema = &compiled.dicts[index as usize];
             if schema.keys.is_empty() {
                 return (
                     Vec::new(),
                     field_plan(
-                        graph,
-                        occurrence.schema_id(),
+                        compiled,
+                        node.schema_id,
                         key,
                         "dict",
                         "dict",
@@ -874,12 +990,12 @@ fn build_field(
                     ),
                 );
             }
-            let class = build_node(graph, occurrence_id, generated_name, None, None);
+            let class = build_node(compiled, node, generated_name, None);
             (
                 vec![class],
                 field_plan(
-                    graph,
-                    occurrence.schema_id(),
+                    compiled,
+                    node.schema_id,
                     key,
                     generated_name,
                     generated_name,
@@ -889,34 +1005,32 @@ fn build_field(
             )
         }
         SchemaId::List(index) => {
-            let schema = &graph.compiled().lists[index as usize];
-            let items = match occurrence.kind() {
-                OccurrenceKind::List { items } => *items,
-                _ => None,
-            };
-            let item_name = match (schema.items, items) {
-                (Some(SchemaId::Dict(_)), Some(item_id)) => {
+            let schema = &compiled.lists[index as usize];
+            let item_name = match (schema.items, node.items.as_deref()) {
+                (Some(SchemaId::Dict(_)), Some(item_node)) => {
                     let item_name = format!("{generated_name}Item");
-                    let item =
-                        build_dict_item(graph, item_id, &item_name, schema.primary_key.as_deref());
+                    let item = build_dict_item(
+                        compiled,
+                        item_node,
+                        &item_name,
+                        schema.primary_key.as_deref(),
+                    );
                     let indexed_primary_key = if schema.allow_duplicate_primary_key {
                         None
                     } else {
                         schema.primary_key.as_deref()
                     };
-                    let description =
-                        list_description(indexed_primary_key, &item_name, graph, item_id);
+                    let description = list_description(indexed_primary_key, &item_name, item_node);
                     let list = list_plan(
                         generated_name,
                         &item_name,
                         indexed_primary_key,
                         description.clone(),
-                        graph,
-                        item_id,
+                        item_node,
                     );
                     let mut field = field_plan(
-                        graph,
-                        occurrence.schema_id(),
+                        compiled,
+                        node.schema_id,
                         key,
                         generated_name,
                         generated_name,
@@ -924,9 +1038,7 @@ fn build_field(
                         None,
                     );
                     field.description = Some(combine_descriptions(
-                        common(graph.compiled(), occurrence.schema_id())
-                            .description
-                            .as_deref(),
+                        common(compiled, node.schema_id).description.as_deref(),
                         &description,
                     ));
                     return (vec![item, ClassPlan::List(list)], field);
@@ -945,8 +1057,8 @@ fn build_field(
                 description: Some(description.clone()),
             };
             let mut field = field_plan(
-                graph,
-                occurrence.schema_id(),
+                compiled,
+                node.schema_id,
                 key,
                 generated_name,
                 generated_name,
@@ -954,9 +1066,7 @@ fn build_field(
                 None,
             );
             field.description = Some(combine_descriptions(
-                common(graph.compiled(), occurrence.schema_id())
-                    .description
-                    .as_deref(),
+                common(compiled, node.schema_id).description.as_deref(),
                 &description,
             ));
             (vec![ClassPlan::List(list)], field)
@@ -965,20 +1075,16 @@ fn build_field(
 }
 
 fn build_dict_item(
-    graph: &SchemaGraph,
-    occurrence_id: OccurrenceId,
+    compiled: &CompiledStore,
+    node: &PythonNode,
     name: &str,
     primary_key: Option<&str>,
 ) -> ClassPlan {
-    let occurrence = graph.occurrence_internal(occurrence_id);
-    let SchemaId::Dict(index) = occurrence.schema_id() else {
+    let SchemaId::Dict(index) = node.schema_id else {
         unreachable!();
     };
-    let schema = &graph.compiled().dicts[index as usize];
-    let keys = match occurrence.kind() {
-        OccurrenceKind::Dict { keys, .. } => keys,
-        _ => unreachable!(),
-    };
+    let schema = &compiled.dicts[index as usize];
+    let keys = &node.keys;
     let mut classes = Vec::new();
     let mut fields = Vec::new();
     let mut ordered_keys = Vec::with_capacity(keys.len());
@@ -992,14 +1098,10 @@ fn build_dict_item(
             .filter(|(key, _)| Some(key.as_str()) != primary_key)
             .map(|(key, child_occurrence)| (key.as_str(), child_occurrence)),
     );
-    for (key, child_id) in ordered_keys {
-        let child = graph.occurrence_internal(*child_id);
-        if is_removed(graph.compiled(), child.schema_id()) {
-            continue;
-        }
+    for (key, child) in ordered_keys {
         let child_name = class_name(key);
         let (mut child_classes, field) =
-            build_field(graph, *child_id, key, &child_name, primary_key == Some(key));
+            build_field(compiled, child, key, &child_name, primary_key == Some(key));
         classes.append(&mut child_classes);
         fields.push(field);
     }
@@ -1019,19 +1121,11 @@ fn list_plan(
     item_name: &str,
     primary_key: Option<&str>,
     description: String,
-    graph: &SchemaGraph,
-    item_id: OccurrenceId,
+    item_node: &PythonNode,
 ) -> ListPlan {
     let primary_key_type = primary_key
-        .and_then(
-            |primary_key| match graph.occurrence_internal(item_id).kind() {
-                OccurrenceKind::Dict { keys, .. } => keys.get(primary_key).copied(),
-                _ => None,
-            },
-        )
-        .map_or("str", |id| {
-            runtime_type(graph.occurrence_internal(id).schema_id())
-        });
+        .and_then(|primary_key| item_node.keys.get(primary_key))
+        .map_or("str", |node| runtime_type(node.schema_id));
     ListPlan {
         name: name.to_owned(),
         base: primary_key.map_or_else(
@@ -1044,20 +1138,13 @@ fn list_plan(
     }
 }
 
-fn list_description(
-    primary_key: Option<&str>,
-    item_name: &str,
-    graph: &SchemaGraph,
-    item_id: OccurrenceId,
-) -> String {
+fn list_description(primary_key: Option<&str>, item_name: &str, item_node: &PythonNode) -> String {
     match primary_key {
         Some(primary_key) => {
-            let primary_key_type = match graph.occurrence_internal(item_id).kind() {
-                OccurrenceKind::Dict { keys, .. } => keys.get(primary_key).map_or("str", |id| {
-                    runtime_type(graph.occurrence_internal(*id).schema_id())
-                }),
-                _ => "str",
-            };
+            let primary_key_type = item_node
+                .keys
+                .get(primary_key)
+                .map_or("str", |node| runtime_type(node.schema_id));
             format!(
                 "Subclass of AvdIndexedList with `{item_name}` items. Primary key is `{}` (`{primary_key_type}`).",
                 field_name(primary_key)
@@ -1068,7 +1155,7 @@ fn list_description(
 }
 
 fn field_plan(
-    graph: &SchemaGraph,
+    compiled: &CompiledStore,
     schema_id: SchemaId,
     key: &str,
     runtime_type: &str,
@@ -1076,7 +1163,7 @@ fn field_plan(
     primary_key: bool,
     external_reference: Option<String>,
 ) -> FieldPlan {
-    let common = common(graph.compiled(), schema_id);
+    let common = common(compiled, schema_id);
     let default = common.default.as_ref().map(|value| {
         let rendered = render_default(value);
         match schema_id {
@@ -1095,7 +1182,7 @@ fn field_plan(
     let description = match schema_id {
         SchemaId::Dict(_) | SchemaId::List(_) => Some(combine_descriptions(
             common.description.as_deref(),
-            &auto_description(graph, schema_id, type_hint),
+            &auto_description(compiled, schema_id, type_hint),
         )),
         _ => common.description.clone(),
     };
@@ -1118,11 +1205,11 @@ fn combine_descriptions(schema_description: Option<&str>, model_description: &st
     }
 }
 
-fn auto_description(graph: &SchemaGraph, schema_id: SchemaId, type_name: &str) -> String {
+fn auto_description(compiled: &CompiledStore, schema_id: SchemaId, type_name: &str) -> String {
     match schema_id {
         SchemaId::Dict(_) => "Subclass of AvdModel.".to_owned(),
         SchemaId::List(index) => {
-            let schema = &graph.compiled().lists[index as usize];
+            let schema = &compiled.lists[index as usize];
             if let Some(primary_key) = &schema.primary_key {
                 format!(
                     "Subclass of AvdIndexedList with `{type_name}Item` items. Primary key is `{primary_key}` (`str`).",
@@ -1146,8 +1233,8 @@ fn common(store: &CompiledStore, schema_id: SchemaId) -> &crate::compiled::Commo
     }
 }
 
-fn is_removed(store: &CompiledStore, schema_id: SchemaId) -> bool {
-    common(store, schema_id)
+fn is_removed_common(common: &crate::compiled::Common) -> bool {
+    common
         .deprecation
         .as_ref()
         .is_some_and(|deprecation| deprecation.removed)
@@ -1190,6 +1277,7 @@ fn render_default(value: &CompiledValue) -> String {
 }
 
 #[derive(Default)]
+/// Imports selected from the completed rendering plan.
 struct ImportSet {
     class_var: bool,
     literal: bool,
