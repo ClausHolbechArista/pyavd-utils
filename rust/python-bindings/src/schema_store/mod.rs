@@ -79,8 +79,8 @@ pub(crate) mod _schema_store {
     #[pyfunction]
     /// Return the primary key for a list schema at the given data path.
     ///
-    /// This helper only supports the EOS config schema for now, since other AVD
-    /// schemas can use dynamic keys which are not supported here.
+    /// This helper only supports the EOS config schema. Path resolution does not use caller data
+    /// or dynamic-key overrides.
     pub(crate) fn get_list_primary_key(
         schema_name: &str,
         data_path: Vec<String>,
