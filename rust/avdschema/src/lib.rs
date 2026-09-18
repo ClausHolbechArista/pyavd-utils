@@ -73,14 +73,6 @@ pub use self::compiled::SchemaId;
 #[cfg(feature = "generation")]
 pub use self::generation::GenerationError;
 #[cfg(feature = "generation")]
-pub use self::generation::Occurrence;
-#[cfg(feature = "generation")]
-pub use self::generation::OccurrenceId;
-#[cfg(feature = "generation")]
-pub use self::generation::OccurrenceKind;
-#[cfg(feature = "generation")]
-pub use self::generation::SchemaGraph;
-#[cfg(feature = "generation")]
 pub use self::generation::generate_python_models;
 #[cfg(feature = "generation")]
 pub use self::generation::generate_python_models_projection;
