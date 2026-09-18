@@ -5,8 +5,9 @@
 //! Data-path traversal and dynamic-key resolution over compiled schema views.
 //!
 //! Static keys and list items can be followed without input data. Dynamic dictionary keys are
-//! different: their concrete names come from values elsewhere in the input document and optional
-//! caller overrides, so they are resolved for each operation rather than archived in [`Store`].
+//! different: their concrete names come from values elsewhere in the input document, schema
+//! defaults, and optional caller overrides, so they are resolved for each operation rather than
+//! archived in [`Store`].
 
 use ordermap::OrderMap;
 
@@ -20,10 +21,11 @@ use crate::SchemaView;
 use crate::Store;
 
 impl Store {
-    /// Return the primary key for the list schema at a static data path.
+    /// Return the primary key for the list schema at a data path.
     ///
-    /// Numeric path components traverse list items. This intentionally only
-    /// supports static keys, matching the existing EOS config helper contract.
+    /// Path resolution is performed without caller-provided data or dynamic-key overrides.
+    /// Schema-defined default dynamic keys remain available. Numeric path components traverse
+    /// list items.
     pub fn get_list_primary_key(
         &self,
         schema_name: &str,

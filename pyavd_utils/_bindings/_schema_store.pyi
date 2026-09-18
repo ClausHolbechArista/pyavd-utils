@@ -27,9 +27,8 @@ def get_list_primary_key(schema_name: Literal["eos_config"], data_path: list[str
     Return the primary key for a list schema at the given data path.
 
     Limitation:
-        This only supports the EOS config schema for now, since other AVD schemas can use
-        dynamic keys which are not supported by this helper yet. The only supported schema
-        name is "eos_config".
+        The only supported schema name is "eos_config". Path resolution does not use caller data
+        or dynamic-key overrides.
 
     Args:
         schema_name: The name of the schema to inspect.
