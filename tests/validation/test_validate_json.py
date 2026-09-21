@@ -46,7 +46,7 @@ def test_validate_json_with_ascii_digit_pattern() -> None:
     validation_result = validate_json_with_adhoc_schema('"١٢٣"', r'{"type": "str", "pattern": "\\d+"}')
 
     assert len(validation_result.violations) == 1
-    assert validation_result.violations[0].message == "The value '١٢٣' is not matching the pattern '\\d+'."
+    assert validation_result.violations[0].message == "The value '١٢٣' does not match the allowed pattern '\\d+'."
     assert len(validation_result.deprecations) == 0
     assert len(validation_result.ignored_eos_config_keys) == 0
 
