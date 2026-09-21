@@ -42,11 +42,10 @@ def test_validate_json_with_dot_wildcard_pattern() -> None:
     assert len(validation_result.ignored_eos_config_keys) == 0
 
 
-def test_validate_json_with_ascii_digit_pattern() -> None:
+def test_validate_json_with_unicode_digit_pattern() -> None:
     validation_result = validate_json_with_adhoc_schema('"١٢٣"', r'{"type": "str", "pattern": "\\d+"}')
 
-    assert len(validation_result.violations) == 1
-    assert validation_result.violations[0].message == "The value '١٢٣' does not match the allowed pattern '\\d+'."
+    assert len(validation_result.violations) == 0
     assert len(validation_result.deprecations) == 0
     assert len(validation_result.ignored_eos_config_keys) == 0
 

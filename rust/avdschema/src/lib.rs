@@ -21,6 +21,9 @@
 )]
 #![deny(unused_crate_dependencies)]
 
+// Enable the targeted Unicode Perl tables used by fancy-regex without enabling
+// its broad Unicode property tables.
+use regex_automata as _;
 #[cfg(test)]
 use test_schema_store as _;
 

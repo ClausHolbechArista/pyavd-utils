@@ -91,6 +91,7 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "ordermap",
+ "regex-automata",
  "serde",
  "serde_json",
  "serde_with",
