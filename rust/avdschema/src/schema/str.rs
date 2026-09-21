@@ -168,6 +168,14 @@ mod tests {
     }
 
     #[test]
+    fn word_boundaries_use_unicode_semantics() {
+        let pattern = Pattern::from(r"\bcafé\b");
+        let compiled_pattern = pattern.get_compiled_pattern().unwrap();
+
+        assert!(compiled_pattern.is_match("café").unwrap());
+    }
+
+    #[test]
     fn complemented_perl_classes_use_unicode_semantics() {
         let non_digits = Pattern::from(r"\D+");
         let non_digits = non_digits.get_compiled_pattern().unwrap();
