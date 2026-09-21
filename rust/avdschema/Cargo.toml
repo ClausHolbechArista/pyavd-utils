@@ -18,7 +18,13 @@ derive_more = { workspace = true, features = [
 ] }
 flate2 = { version = "1.1.0", optional = true }
 ordermap = { workspace = true, features = ["serde"] }
-fancy-regex = { workspace = true, features = ["std", "variable-lookbehinds"] }
+# AVD schema patterns follow ECMA 262. Keep Unicode enabled: disabling it also
+# makes wildcards and negated classes incompatible with Rust's UTF-8 strings.
+fancy-regex = { workspace = true, features = [
+    "std",
+    "unicode",
+    "variable-lookbehinds",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_with = { version = "3.20.0" }

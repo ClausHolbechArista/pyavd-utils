@@ -5,7 +5,6 @@
 use std::sync::OnceLock;
 
 use fancy_regex::Regex;
-use fancy_regex::RegexBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -103,14 +102,7 @@ impl Pattern {
     }
     pub fn get_compiled_pattern(&self) -> Result<&Regex, &fancy_regex::Error> {
         self.compiled_pattern
-            .get_or_init(|| {
-                RegexBuilder::new(format!("^(?:{})$", self.pattern).as_str())
-                    // This keeps the Perl classes `\d`, `\s`, and `\w` enabled with ASCII
-                    // semantics; see `perl_classes_compile`. It only disables their Unicode
-                    // expansion and Unicode properties such as `\p{Greek}`.
-                    .unicode_mode(false)
-                    .build()
-            })
+            .get_or_init(|| Regex::new(format!("^(?:{})$", self.pattern).as_str()))
             .as_ref()
     }
 }
@@ -151,6 +143,24 @@ mod tests {
     }
 
     #[test]
+    fn dot_wildcard_compiles_and_matches_the_complete_value() {
+        let pattern = Pattern::from("Ethernet.*");
+        let compiled_pattern = pattern.get_compiled_pattern().unwrap();
+
+        assert!(compiled_pattern.is_match("Ethernet1").unwrap());
+        assert!(!compiled_pattern.is_match("FastEthernet1").unwrap());
+    }
+
+    #[test]
+    fn negated_character_class_compiles() {
+        let pattern = Pattern::from("Ethernet[^/]+");
+        let compiled_pattern = pattern.get_compiled_pattern().unwrap();
+
+        assert!(compiled_pattern.is_match("Ethernet1").unwrap());
+        assert!(!compiled_pattern.is_match("Ethernet1/1").unwrap());
+    }
+
+    #[test]
     fn lookahead_compiles() {
         assert!(
             Pattern::from("(?=[a-z])(?=.*[0-9])[a-z0-9]+")
@@ -175,7 +185,11 @@ mod tests {
     }
 
     #[test]
-    fn broad_unicode_property_is_rejected() {
-        assert!(Pattern::from(r"\p{Greek}+").get_compiled_pattern().is_err());
+    fn unicode_script_property_matches() {
+        let pattern = Pattern::from(r"\p{Script=Greek}+");
+        let compiled_pattern = pattern.get_compiled_pattern().unwrap();
+
+        assert!(compiled_pattern.is_match("αβγ").unwrap());
+        assert!(!compiled_pattern.is_match("abc").unwrap());
     }
 }

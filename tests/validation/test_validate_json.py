@@ -34,6 +34,22 @@ def test_validate_json_with_adhoc_schema() -> None:
     assert len(validation_result.ignored_eos_config_keys) == 0
 
 
+def test_validate_json_with_dot_wildcard_pattern() -> None:
+    validation_result = validate_json_with_adhoc_schema('"Ethernet1"', '{"type": "str", "pattern": "Ethernet.*"}')
+
+    assert len(validation_result.violations) == 0
+    assert len(validation_result.deprecations) == 0
+    assert len(validation_result.ignored_eos_config_keys) == 0
+
+
+def test_validate_json_with_unicode_script_pattern() -> None:
+    validation_result = validate_json_with_adhoc_schema('"αβγ"', r'{"type": "str", "pattern": "\\p{Script=Greek}+"}')
+
+    assert len(validation_result.violations) == 0
+    assert len(validation_result.deprecations) == 0
+    assert len(validation_result.ignored_eos_config_keys) == 0
+
+
 @pytest.mark.usefixtures("init_store")
 def test_validate_json_with_adhoc_schema_invalid_json() -> None:
     with pytest.raises(RuntimeError, match="Invalid JSON in data"):
