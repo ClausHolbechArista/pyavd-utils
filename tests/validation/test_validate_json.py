@@ -35,17 +35,18 @@ def test_validate_json_with_adhoc_schema() -> None:
 
 
 def test_validate_json_with_dot_wildcard_pattern() -> None:
-    validation_result = validate_json_with_adhoc_schema('"Ethernet1"', '{"type": "str", "pattern": "Ethernet.*"}')
+    validation_result = validate_json_with_adhoc_schema('"Etherneté"', '{"type": "str", "pattern": "Ethernet.*"}')
 
     assert len(validation_result.violations) == 0
     assert len(validation_result.deprecations) == 0
     assert len(validation_result.ignored_eos_config_keys) == 0
 
 
-def test_validate_json_with_unicode_script_pattern() -> None:
-    validation_result = validate_json_with_adhoc_schema('"αβγ"', r'{"type": "str", "pattern": "\\p{Script=Greek}+"}')
+def test_validate_json_with_ascii_digit_pattern() -> None:
+    validation_result = validate_json_with_adhoc_schema('"١٢٣"', r'{"type": "str", "pattern": "\\d+"}')
 
-    assert len(validation_result.violations) == 0
+    assert len(validation_result.violations) == 1
+    assert validation_result.violations[0].message == "The value '١٢٣' is not matching the pattern '\\d+'."
     assert len(validation_result.deprecations) == 0
     assert len(validation_result.ignored_eos_config_keys) == 0
 

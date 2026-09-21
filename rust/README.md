@@ -26,12 +26,13 @@ python_bindings --->|depends on| passwords
 
 ## Lean avdschema features
 
-AVD's metaschema defines schema patterns as ECMA 262 regular expressions.
-`avdschema` always includes the corresponding Unicode-aware regex support,
-including Perl classes (`\d`, `\s`, and `\w`), wildcards, negated character
-classes, Unicode properties, and variable-length lookbehinds. Its default
-features additionally enable native performance accelerators, gzip loading, and
-YAML file support.
+AVD schemas use a deliberately restricted regular-expression dialect.
+`avdschema` supports ASCII Perl classes (`\d`, `\s`, and `\w`, including their
+uppercase complements), Unicode-safe wildcards and explicit character classes,
+lookarounds, and variable-length lookbehinds. Unicode properties and scripts
+such as `\p{Greek}` are intentionally unsupported. Patterns are matched against
+the complete value. The default features additionally enable native performance
+accelerators, gzip loading, and YAML file support.
 
 The AVD language server consumes these crates through `avd-lsp-support`. That
 crate exposes the exact schema, validation, and YAML parser API used by the LSP
@@ -46,5 +47,5 @@ WASM build should retain the empty default feature set.
 
 The existing `yaml-parser` feature named `avdschema` retains the default
 `avdschema` feature set, including performance accelerators, gzip, and YAML.
-Use `avdschema-core` for the lean path. Perl classes and variable-length
+Use `avdschema-core` for the lean path. ASCII Perl classes and variable-length
 lookbehinds are always enabled.
