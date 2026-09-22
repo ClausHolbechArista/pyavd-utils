@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14"
+          python-version-file: "pyproject.toml"
       - name: Update version to ${{ inputs.TESTPYPI_VERSION }}
         if: ${{ inputs.TESTPYPI_VERSION != '' }}
         shell: bash # For our Windows friend
@@ -84,17 +84,16 @@ jobs:
         with:
           name: pyavd-utils-wheels-${{ inputs.runner }}
           path: dist
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ matrix.python }}
-      - name: Install tox
-        run: |
-          pip install tox tox-gh-actions --upgrade
-      - name: Run pytest via tox for the wheel
+      - name: Run pytest against the wheel
         shell: bash
         run: |-
           WHEEL_PATH=$(find dist/ -maxdepth 1 -name "*.whl" ! -name "*musllinux*" -print -quit)
-          tox run --installpkg $WHEEL_PATH
+          uv sync --locked --no-default-groups --group pytest --no-install-project
+          uv pip install "$WHEEL_PATH"
+          uv run --no-sync pytest
 
   pyavd_utils_test_musl_wheels_platform:
     # NOTE: Let's track this: https://github.com/actions/runner/issues/801
@@ -130,11 +129,13 @@ jobs:
         with:
           name: pyavd-utils-wheels-${{ inputs.runner }}
           path: dist
-      - name: Install tox
-        run: |
-          pip install tox tox-gh-actions --upgrade
-      - name: Run pytest via tox for the wheel
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run pytest against the wheel
         shell: sh
         run: |-
           WHEEL_PATH=$(find dist/ -maxdepth 1 -name "*musllinux*.whl" -print -quit)
-          tox run --installpkg $WHEEL_PATH
+          uv sync --locked --no-default-groups --group pytest --no-install-project
+          uv pip install "$WHEEL_PATH"
+          uv run --no-sync pytest

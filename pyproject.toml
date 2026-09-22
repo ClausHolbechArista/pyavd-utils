@@ -168,8 +168,6 @@ docstring-code-format = true
 
 [tool.pyright]
 exclude = [
-  # Excluded
-  ".tox",
   ".github",
 ]
 pythonVersion = "3.10"
