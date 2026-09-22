@@ -26,12 +26,14 @@ python_bindings --->|depends on| passwords
 
 ## Lean avdschema features
 
-`avdschema` always includes the regular-expression functionality required by
-existing AVD schemas: ASCII Perl classes (`\d`, `\s`, and `\w`) and
-variable-length lookbehinds. Its default features enable native performance
-accelerators, gzip loading, and YAML file support. Full Unicode properties and
-scripts are intentionally unsupported, so patterns such as `\p{Greek}` are
-rejected.
+AVD schemas use a deliberately restricted regular-expression dialect.
+`avdschema` supports Unicode-aware Perl classes (`\d`, `\s`, and `\w`, including
+their uppercase complements), Unicode-safe wildcards and explicit character
+classes, lookarounds, and variable-length lookbehinds. Broader Unicode
+properties and scripts such as `\p{Greek}` are intentionally unsupported.
+Patterns are matched against the complete value. The default features
+additionally enable native performance accelerators, gzip loading, and YAML file
+support.
 
 The AVD language server consumes these crates through `avd-lsp-support`. That
 crate exposes the exact schema, validation, and YAML parser API used by the LSP
@@ -46,5 +48,5 @@ WASM build should retain the empty default feature set.
 
 The existing `yaml-parser` feature named `avdschema` retains the default
 `avdschema` feature set, including performance accelerators, gzip, and YAML.
-Use `avdschema-core` for the lean path. ASCII Perl classes and variable-length
-lookbehinds are always enabled.
+Use `avdschema-core` for the lean path. Unicode-aware Perl classes and
+variable-length lookbehinds are always enabled.

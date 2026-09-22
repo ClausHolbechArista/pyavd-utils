@@ -35,6 +35,24 @@ def test_validate_json_with_adhoc_schema() -> None:
 
 
 @pytest.mark.usefixtures("init_store")
+def test_validate_json_with_dot_wildcard_pattern() -> None:
+    validation_result = validate_json_with_adhoc_schema('"Etherneté"', '{"type": "str", "pattern": "Ethernet.*"}')
+
+    assert len(validation_result.violations) == 0
+    assert len(validation_result.deprecations) == 0
+    assert len(validation_result.ignored_eos_config_keys) == 0
+
+
+@pytest.mark.usefixtures("init_store")
+def test_validate_json_with_unicode_digit_pattern() -> None:
+    validation_result = validate_json_with_adhoc_schema('"١٢٣"', r'{"type": "str", "pattern": "\\d+"}')
+
+    assert len(validation_result.violations) == 0
+    assert len(validation_result.deprecations) == 0
+    assert len(validation_result.ignored_eos_config_keys) == 0
+
+
+@pytest.mark.usefixtures("init_store")
 def test_validate_json_with_adhoc_schema_invalid_json() -> None:
     with pytest.raises(RuntimeError, match="Invalid JSON in data"):
         validate_json_with_adhoc_schema("invalid_json", '{"type": "dict"}')
