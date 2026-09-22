@@ -34,6 +34,7 @@ def test_validate_json_with_adhoc_schema() -> None:
     assert len(validation_result.ignored_eos_config_keys) == 0
 
 
+@pytest.mark.usefixtures("init_store")
 def test_validate_json_with_dot_wildcard_pattern() -> None:
     validation_result = validate_json_with_adhoc_schema('"Etherneté"', '{"type": "str", "pattern": "Ethernet.*"}')
 
@@ -42,6 +43,7 @@ def test_validate_json_with_dot_wildcard_pattern() -> None:
     assert len(validation_result.ignored_eos_config_keys) == 0
 
 
+@pytest.mark.usefixtures("init_store")
 def test_validate_json_with_unicode_digit_pattern() -> None:
     validation_result = validate_json_with_adhoc_schema('"١٢٣"', r'{"type": "str", "pattern": "\\d+"}')
 
