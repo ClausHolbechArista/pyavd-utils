@@ -29,8 +29,6 @@ dist/
 .pytest_cache/
 ## pyenv
 .python-version
-## uv
-uv.lock
 ## git worktrees
 .worktrees/
 ## direnv
