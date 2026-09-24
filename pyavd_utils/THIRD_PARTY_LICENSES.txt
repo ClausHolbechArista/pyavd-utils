@@ -214,17 +214,6 @@ License text:
    See the License for the specific language governing permissions and
    limitations under the License.
 
-================================================================================
-Apache License 2.0
-================================================================================
-
-Used by:
-  - avd-lsp-support 0.0.8
-  - avdschema 0.0.8
-  - passwords 0.0.8
-  - python-bindings 0.0.8
-  - validation 0.0.8
-  - yaml-parser 0.0.8
   - ryu 1.0.23
 
 License text:
