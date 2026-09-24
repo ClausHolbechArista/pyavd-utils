@@ -68,7 +68,10 @@ pub struct Common {
     pub documentation_options: Option<CompiledDocumentationOptions>,
 }
 
-/// JSON-compatible schema default stored without depending on serde's owned value model.
+/// Schema default stored without depending on serde's owned value model.
+///
+/// AVD schemas do not have a floating-point model type, so numeric defaults are limited to exact
+/// integers.
 #[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[rkyv(derive(Debug))]
 #[rkyv(serialize_bounds(
@@ -82,33 +85,9 @@ pub enum CompiledValue {
     Bool(bool),
     I64(i64),
     U64(u64),
-    /// IEEE-754 bits for a finite JSON number.
-    F64(u64),
     String(String),
     List(#[rkyv(omit_bounds)] Vec<CompiledValue>),
     Object(#[rkyv(omit_bounds)] Vec<(String, CompiledValue)>),
-}
-
-impl From<&Value> for CompiledValue {
-    fn from(value: &Value) -> Self {
-        match value {
-            Value::Null => Self::Null,
-            Value::Bool(value) => Self::Bool(*value),
-            Value::Number(value) => value
-                .as_i64()
-                .map(Self::I64)
-                .or_else(|| value.as_u64().map(Self::U64))
-                .unwrap_or_else(|| Self::F64(value.as_f64().unwrap_or_default().to_bits())),
-            Value::String(value) => Self::String(value.clone()),
-            Value::Array(values) => Self::List(values.iter().map(Self::from).collect()),
-            Value::Object(values) => Self::Object(
-                values
-                    .iter()
-                    .map(|(key, child)| (key.clone(), Self::from(child)))
-                    .collect(),
-            ),
-        }
-    }
 }
 
 /// Documentation controls inherited onto an effective schema node.
@@ -377,6 +356,15 @@ pub enum SchemaDiagnostic {
         /// Schema path where the cycle was detected.
         schema_path: Vec<String>,
     },
+    /// A schema default contains a number unsupported by AVD schema model types.
+    UnsupportedDefaultNumber {
+        /// Schema path whose effective default is invalid.
+        schema_path: Vec<String>,
+        /// Path from the default root to the invalid number.
+        default_path: Vec<String>,
+        /// Normalized JSON number representation.
+        value: String,
+    },
 }
 
 impl std::fmt::Display for SchemaDiagnostic {
@@ -408,6 +396,23 @@ impl std::fmt::Display for SchemaDiagnostic {
                 "Schema contains a structural cycle while compiling '{}'",
                 schema_path.join("/")
             ),
+            Self::UnsupportedDefaultNumber {
+                schema_path,
+                default_path,
+                value,
+            } => {
+                let location = if default_path.is_empty() {
+                    "default".to_owned()
+                } else {
+                    format!("default/{}", default_path.join("/"))
+                };
+                write!(
+                    f,
+                    "Schema default at '{}/{}' contains unsupported number '{value}'; AVD schema defaults only support integers representable as i64 or u64",
+                    schema_path.join("/"),
+                    location
+                )
+            }
         }
     }
 }
@@ -552,25 +557,17 @@ impl<'a> Compiler<'a> {
             .insert(memo_key.clone(), schema_path.to_vec());
 
         let node_result = match layers.first().copied() {
-            Some(SourceSchema::Bool(_)) => NodeKey::Bool(Self::compile_bool(&layers)),
-            Some(SourceSchema::Int(_)) => NodeKey::Int(Self::compile_int(&layers)),
-            Some(SourceSchema::Str(_)) => NodeKey::Str(Self::compile_str(&layers)),
-            Some(SourceSchema::List(_)) => match self.compile_list(&layers, schema_path) {
-                Ok(schema) => NodeKey::List(schema),
-                Err(error) => {
-                    self.compiling_layers.remove(&memo_key);
-                    return Err(error);
-                }
-            },
-            Some(SourceSchema::Dict(_)) => {
-                match self.compile_dict(declared, &layers, schema_path) {
-                    Ok(schema) => NodeKey::Dict(schema),
-                    Err(error) => {
-                        self.compiling_layers.remove(&memo_key);
-                        return Err(error);
-                    }
-                }
+            Some(SourceSchema::Bool(_)) => {
+                Self::compile_bool(&layers, schema_path).map(NodeKey::Bool)
             }
+            Some(SourceSchema::Int(_)) => Self::compile_int(&layers, schema_path).map(NodeKey::Int),
+            Some(SourceSchema::Str(_)) => Self::compile_str(&layers, schema_path).map(NodeKey::Str),
+            Some(SourceSchema::List(_)) => {
+                self.compile_list(&layers, schema_path).map(NodeKey::List)
+            }
+            Some(SourceSchema::Dict(_)) => self
+                .compile_dict(declared, &layers, schema_path)
+                .map(NodeKey::Dict),
             None => {
                 self.compiling_layers.remove(&memo_key);
                 return Err(SchemaDiagnostic::TypeMismatch {
@@ -581,6 +578,7 @@ impl<'a> Compiler<'a> {
             }
         };
         self.compiling_layers.remove(&memo_key);
+        let node_result = node_result?;
         let id = self.intern(node_result)?;
         self.memoized_layers.insert(memo_key, id);
         Ok(id)
@@ -634,19 +632,25 @@ impl<'a> Compiler<'a> {
         Ok(result)
     }
 
-    fn compile_bool(layers: &[&SourceSchema]) -> BoolSchema {
-        BoolSchema {
-            common: common(layers),
-        }
+    fn compile_bool(
+        layers: &[&SourceSchema],
+        schema_path: &[String],
+    ) -> Result<BoolSchema, CompileError> {
+        Ok(BoolSchema {
+            common: common(layers, schema_path)?,
+        })
     }
 
-    fn compile_int(layers: &[&SourceSchema]) -> IntSchema {
+    fn compile_int(
+        layers: &[&SourceSchema],
+        schema_path: &[String],
+    ) -> Result<IntSchema, CompileError> {
         let schemas = layers.iter().filter_map(|schema| match schema {
             SourceSchema::Int(schema) => Some(schema),
             _ => None,
         });
-        IntSchema {
-            common: common(layers),
+        Ok(IntSchema {
+            common: common(layers, schema_path)?,
             min: schemas.clone().find_map(|schema| schema.min),
             max: schemas.clone().find_map(|schema| schema.max),
             valid_values: schemas
@@ -658,16 +662,19 @@ impl<'a> Compiler<'a> {
             convert_types: schemas
                 .clone()
                 .find_map(|schema| schema.convert_types.convert_types.clone()),
-        }
+        })
     }
 
-    fn compile_str(layers: &[&SourceSchema]) -> StrSchema {
+    fn compile_str(
+        layers: &[&SourceSchema],
+        schema_path: &[String],
+    ) -> Result<StrSchema, CompileError> {
         let schemas = layers.iter().filter_map(|schema| match schema {
             SourceSchema::Str(schema) => Some(schema),
             _ => None,
         });
-        StrSchema {
-            common: common(layers),
+        Ok(StrSchema {
+            common: common(layers, schema_path)?,
             convert_to_lower_case: schemas
                 .clone()
                 .find_map(|schema| schema.convert_to_lower_case)
@@ -693,7 +700,7 @@ impl<'a> Compiler<'a> {
                 .clone()
                 .find_map(|schema| schema.format)
                 .map(CompiledStringFormat::from),
-        }
+        })
     }
 
     fn compile_list(
@@ -710,7 +717,7 @@ impl<'a> Compiler<'a> {
             .filter_map(|schema| schema.items.as_deref())
             .collect::<Vec<_>>();
         Ok(ListSchema {
-            common: common(layers),
+            common: common(layers, schema_path)?,
             items: (!item_layers.is_empty())
                 .then(|| self.compile_layers(&item_layers, &schema_path_with(schema_path, "items")))
                 .transpose()?,
@@ -757,7 +764,7 @@ impl<'a> Compiler<'a> {
                     && schema.relaxed_validation.unwrap_or_default()
         );
         Ok(DictSchema {
-            common: common(layers),
+            common: common(layers, schema_path)?,
             keys,
             dynamic_keys,
             default_dynamic_keys,
@@ -862,8 +869,8 @@ fn schema_path_with(schema_path: &[String], segment: &str) -> Vec<String> {
     child_path
 }
 
-fn common(layers: &[&SourceSchema]) -> Common {
-    Common {
+fn common(layers: &[&SourceSchema], schema_path: &[String]) -> Result<Common, CompileError> {
+    Ok(Common {
         required: layers
             .iter()
             .find_map(|schema| match schema {
@@ -878,7 +885,8 @@ fn common(layers: &[&SourceSchema]) -> Common {
             .iter()
             .find_map(|schema| schema_default(schema))
             .as_ref()
-            .map(CompiledValue::from),
+            .map(|value| compile_default_value(value, schema_path, &[]))
+            .transpose()?,
         display_name: layers.iter().find_map(|schema| match schema {
             SourceSchema::Bool(schema) => schema.base.display_name.clone(),
             SourceSchema::Int(schema) => schema.base.display_name.clone(),
@@ -944,6 +952,48 @@ fn common(layers: &[&SourceSchema]) -> Common {
                     })
             }
         }),
+    })
+}
+
+fn compile_default_value(
+    value: &Value,
+    schema_path: &[String],
+    default_path: &[String],
+) -> Result<CompiledValue, CompileError> {
+    match value {
+        Value::Null => Ok(CompiledValue::Null),
+        Value::Bool(value) => Ok(CompiledValue::Bool(*value)),
+        Value::Number(value) => value
+            .as_i64()
+            .map(CompiledValue::I64)
+            .or_else(|| value.as_u64().map(CompiledValue::U64))
+            .ok_or_else(|| {
+                SchemaDiagnostic::UnsupportedDefaultNumber {
+                    schema_path: schema_path.to_vec(),
+                    default_path: default_path.to_vec(),
+                    value: value.to_string(),
+                }
+                .into()
+            }),
+        Value::String(value) => Ok(CompiledValue::String(value.clone())),
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let child_path = schema_path_with(default_path, &index.to_string());
+                compile_default_value(child, schema_path, &child_path)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(CompiledValue::List),
+        Value::Object(values) => values
+            .iter()
+            .map(|(key, child)| {
+                let child_path = schema_path_with(default_path, key);
+                compile_default_value(child, schema_path, &child_path)
+                    .map(|compiled| (key.clone(), compiled))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(CompiledValue::Object),
     }
 }
 
@@ -1228,6 +1278,46 @@ mod tests {
             structural_cycle_diagnostic.to_string(),
             "Schema contains a structural cycle while compiling 'root/keys/child'"
         );
+    }
+
+    #[test]
+    fn compilation_rejects_unsupported_numbers_in_nested_defaults() {
+        for (number, expected_value, expected_path) in [
+            ("1.5", "1.5", ["nested", "0"]),
+            (
+                "18446744073709551617",
+                "18446744073709551617",
+                ["nested", "0"],
+            ),
+            ("1e400", "1e+400", ["nested", "0"]),
+        ] {
+            let source = StoreSource::from_json(&format!(
+                r#"{{"test":{{"type":"dict","default":{{"nested":[{number}]}}}}}}"#
+            ))
+            .expect("arbitrary-precision source number should deserialize");
+            let CompileError::InvalidSchema(diagnostics) =
+                CompiledStore::compile(&source).unwrap_err()
+            else {
+                panic!("unsupported default number should return schema diagnostics")
+            };
+            let Some(SchemaDiagnostic::UnsupportedDefaultNumber {
+                schema_path,
+                default_path,
+                value,
+            }) = diagnostics.iter().next()
+            else {
+                panic!("unsupported default number should return its typed diagnostic")
+            };
+            assert_eq!(schema_path, &["test"]);
+            assert_eq!(default_path, &expected_path);
+            assert_eq!(value, expected_value);
+            assert_eq!(
+                diagnostics.to_string(),
+                format!(
+                    "Schema default at 'test/default/nested/0' contains unsupported number '{expected_value}'; AVD schema defaults only support integers representable as i64 or u64"
+                )
+            );
+        }
     }
 
     #[test]

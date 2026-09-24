@@ -31,7 +31,7 @@ indexmap = { workspace = true }
 rkyv = { workspace = true }
 self_cell = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["preserve_order"] }
+serde_json = { workspace = true, features = ["arbitrary_precision", "preserve_order"] }
 serde_with = { version = "3.20.0" }
 serde_yaml = { workspace = true, optional = true }
 walkdir = { version = "2.5.0", optional = true }

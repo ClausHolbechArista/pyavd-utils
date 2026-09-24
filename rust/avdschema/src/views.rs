@@ -183,8 +183,6 @@ pub enum SchemaValueView<'a> {
     I64(i64),
     /// Unsigned integer value.
     U64(u64),
-    /// Floating-point value.
-    F64(f64),
     /// Borrowed string value.
     String(&'a str),
     /// Borrowed list value.
@@ -228,7 +226,6 @@ impl<'a> From<&'a ArchivedCompiledValue> for SchemaValueView<'a> {
             ArchivedCompiledValue::Bool(value) => Self::Bool(*value),
             ArchivedCompiledValue::I64(value) => Self::I64(value.to_native()),
             ArchivedCompiledValue::U64(value) => Self::U64(value.to_native()),
-            ArchivedCompiledValue::F64(value) => Self::F64(f64::from_bits(value.to_native())),
             ArchivedCompiledValue::String(value) => Self::String(value.as_ref()),
             ArchivedCompiledValue::List(values) => Self::List(SchemaListValueView(values)),
             ArchivedCompiledValue::Object(values) => Self::Object(SchemaObjectValueView(values)),
@@ -653,8 +650,7 @@ mod tests {
                         "names": ["one", "two"],
                         "nothing": null,
                         "negative": -1,
-                        "large": 9_223_372_036_854_775_808_u64,
-                        "ratio": 1.5
+                        "large": 9_223_372_036_854_775_808_u64
                     },
                     "display_name": "Test schema",
                     "documentation_options": {"table": "root", "hide_keys": true},
@@ -705,10 +701,6 @@ mod tests {
         assert!(matches!(
             defaults["large"],
             SchemaValueView::U64(9_223_372_036_854_775_808)
-        ));
-        assert!(matches!(
-            defaults["ratio"],
-            SchemaValueView::F64(value) if value.to_bits() == 1.5_f64.to_bits()
         ));
         let SchemaValueView::List(names) = defaults["names"] else {
             panic!("names default should be a list")
