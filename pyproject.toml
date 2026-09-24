@@ -209,7 +209,7 @@ exclude_also = [
 
 [tool.bumpversion]
 
-current_version = "0.0.9"
+current_version = "0.0.10"
 
 allow_dirty = true
 commit = false
