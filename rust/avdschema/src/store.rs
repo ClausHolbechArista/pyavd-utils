@@ -97,6 +97,10 @@ impl Store {
     ///
     /// The archive must use the format version supported by this crate. The returned store keeps
     /// the mapping alive for as long as any borrowed view can exist.
+    ///
+    /// The mapped file must not be modified or truncated in place while the returned store is
+    /// alive. Publish archive updates by writing a separate file and replacing the path atomically,
+    /// as the archive writer does, or by using a new path.
     #[cfg(feature = "mmap")]
     pub fn from_file(path: &Path) -> Result<Self, StoreError> {
         let bytes = mmap_guard::map_file(path)?;

@@ -47,6 +47,11 @@ def init_store_from_file(file: Path) -> None:
     The archive is validated and memory-mapped. Initialization can happen only once in each
     process and must happen before using APIs that rely on the shared schema store.
 
+    Warning:
+        The archive file must not be modified or truncated in place after initialization. Publish
+        an updated archive by writing a separate file and replacing the path atomically, or use a
+        new path.
+
     Args:
         file: Path to the compiled schema archive.
 
