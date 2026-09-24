@@ -1192,6 +1192,66 @@ mod tests {
     }
 
     #[test]
+    fn repeated_inherited_layers_share_compiled_nodes() {
+        let source = StoreSource::from_json(
+            r#"{
+                "base": {
+                    "type": "dict",
+                    "keys": {"shared": {"type": "str", "default": "value"}}
+                },
+                "first": {"type": "dict", "$ref": "base#"},
+                "second": {"type": "dict", "$ref": "base#"}
+            }"#,
+        )
+        .expect("inherited source schemas should deserialize");
+
+        let compiled = CompiledStore::compile(&source).expect("inherited schemas should compile");
+        let base = compiled.roots.get("base").expect("base root should exist");
+        let first = compiled
+            .roots
+            .get("first")
+            .expect("first root should exist");
+        let second = compiled
+            .roots
+            .get("second")
+            .expect("second root should exist");
+
+        assert_eq!(first, base);
+        assert_eq!(second, base);
+        assert_eq!(compiled.dicts.len(), 1);
+        assert_eq!(compiled.strings.len(), 1);
+    }
+
+    #[test]
+    fn distinct_equivalent_nodes_share_an_interned_table_entry() {
+        let source = StoreSource::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "keys": {
+                        "first": {"type": "str", "default": "value"},
+                        "second": {"type": "str", "default": "value"}
+                    }
+                }
+            }"#,
+        )
+        .expect("equivalent source schemas should deserialize");
+
+        let compiled =
+            CompiledStore::compile(&source).expect("equivalent source schemas should compile");
+        let Some(SchemaId::Dict(root_index)) = compiled.roots.get("test") else {
+            panic!("test root should be a dictionary")
+        };
+        let root = compiled
+            .dicts
+            .get(usize::try_from(*root_index).expect("root index should fit usize"))
+            .expect("root dictionary should exist");
+
+        assert_eq!(root.keys.get("first"), root.keys.get("second"));
+        assert_eq!(compiled.strings.len(), 1);
+    }
+
+    #[test]
     fn schema_compilation_errors_expose_typed_diagnostics() {
         let invalid_reference =
             StoreSource::from_json(r#"{"test":{"type":"str","$ref":"missing#"}}"#).unwrap();
