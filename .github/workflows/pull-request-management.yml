@@ -37,7 +37,7 @@ jobs:
           python-version: "3.14"
       - name: Generate coverage report
         run: |-
-          uv sync --locked --no-default-groups --group pytest --group coverage
+          uv sync --locked --all-packages --no-default-groups --group pytest --group coverage
           uv run --no-sync coverage erase
           uv run --no-sync coverage run -m pytest
           uv run --no-sync coverage combine
@@ -91,7 +91,8 @@ jobs:
           # Apply LLVM instrumentation to Cargo tests and the PyO3 extension built by uv.
           eval "$(cargo llvm-cov show-env --sh)"
           cargo test --locked --all-targets --all-features
-          uv run --locked --group pytest python -m pytest
+          uv sync --locked --all-packages --no-default-groups --group pytest
+          uv run --no-sync python -m pytest
           cargo llvm-cov report --lcov --output-path lcov.info
         if: |
           matrix.os == 'ubuntu-latest'
