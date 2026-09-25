@@ -6,7 +6,6 @@
 from pathlib import Path
 from typing import Literal
 
-
 def get_list_primary_key(schema_name: Literal["eos_config", "avd_design"], data_path: list[str]) -> str | None:
     """
     Return the primary key for a list schema at the given data path.
