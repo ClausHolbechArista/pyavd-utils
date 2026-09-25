@@ -14,6 +14,14 @@ use serde::de::Error as _;
 use serde_json::Value;
 use serde_with::skip_serializing_none;
 
+#[cfg(feature = "metaschema")]
+use super::MetaDefinitionKey;
+#[cfg(feature = "metaschema")]
+use super::MetaDynamicSchemaKey;
+#[cfg(feature = "metaschema")]
+use super::MetaObject;
+#[cfg(feature = "metaschema")]
+use super::MetaStaticSchemaKey;
 use crate::Inherit;
 use crate::any::SourceSchema;
 use crate::base::Base;
@@ -30,11 +38,20 @@ use crate::utils::load::LoadFromFragments;
 /// schema document and are therefore not accepted on nested [`super::SourceDict`] values.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metaschema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SourceRootDict {
     /// Statically named dictionary keys.
+    #[cfg_attr(
+        feature = "metaschema",
+        schemars(with = "Option<std::collections::BTreeMap<MetaStaticSchemaKey, SourceSchema>>")
+    )]
     pub keys: Option<OrderMap<String, SourceSchema>>,
     /// Data paths whose values provide additional root key names.
+    #[cfg_attr(
+        feature = "metaschema",
+        schemars(with = "Option<std::collections::BTreeMap<MetaDynamicSchemaKey, SourceSchema>>")
+    )]
     pub dynamic_keys: Option<OrderMap<String, SourceSchema>>,
     /// Whether input keys absent from `keys` and resolved `dynamic_keys` are accepted.
     pub allow_other_keys: Option<bool>,
@@ -48,9 +65,14 @@ pub struct SourceRootDict {
     pub schema_schema: Option<String>,
     /// Reusable schema definitions addressable through `$ref`.
     #[serde(rename = "$defs")]
+    #[cfg_attr(
+        feature = "metaschema",
+        schemars(with = "Option<std::collections::BTreeMap<MetaDefinitionKey, SourceSchema>>")
+    )]
     pub schema_defs: Option<OrderMap<String, SourceSchema>>,
     /// Properties shared with every schema value.
     #[serde(flatten)]
+    #[cfg_attr(feature = "metaschema", schemars(with = "Base<MetaObject>"))]
     pub base: Base<OrderMap<String, Value>>,
     /// Documentation-generation settings for this dictionary.
     pub documentation_options: Option<DocumentationOptionsDict>,
@@ -61,6 +83,7 @@ pub struct SourceRootDict {
 /// Keeping the discriminator outside [`SourceRootDict`] gives callers the same ergonomic data
 /// model as the recursive schema structs while still requiring `type: dict` on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "metaschema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub(crate) enum SourceRootSchema {
     Dict(SourceRootDict),
