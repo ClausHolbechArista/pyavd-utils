@@ -35,6 +35,8 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.14"
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show
       - name: Generate coverage report
         run: |-
           uv sync --locked --all-packages --no-default-groups --group pytest --group coverage

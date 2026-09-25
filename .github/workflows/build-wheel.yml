@@ -144,11 +144,14 @@ jobs:
           GENERATION_WHEEL=$(find dist/ -maxdepth 1 -name "pyavd_utils_gen-*.whl" ! -name "*musllinux*" -print -quit)
           uv sync --locked --no-default-groups --group pytest --no-install-workspace
           uv pip install "$RUNTIME_WHEEL"
-          uv run --no-sync python -c "import importlib.util, pyavd_utils.schema_store, pyavd_utils.validation; \
+          WORKSPACE=$(pwd)
+          PYTHON=$(uv run --no-sync python -c "import sys; print(sys.executable)")
+          cd ..
+          "$PYTHON" -c "import importlib.util, pyavd_utils.schema_store, pyavd_utils.validation; \
             assert importlib.util.find_spec('pyavd_utils_gen') is None; \
             assert not hasattr(pyavd_utils.schema_store, 'compile_schema_archive')"
-          uv pip install "$GENERATION_WHEEL"
-          uv run --no-sync pytest
+          uv pip install "$WORKSPACE/$GENERATION_WHEEL" --python "$PYTHON"
+          "$PYTHON" -m pytest "$WORKSPACE/tests"
 
   pyavd_utils_test_musl_wheels_platform:
     # NOTE: Let's track this: https://github.com/actions/runner/issues/801
@@ -199,8 +202,11 @@ jobs:
           GENERATION_WHEEL=$(find dist/ -maxdepth 1 -name "pyavd_utils_gen-*.whl" -name "*musllinux*" -print -quit)
           uv sync --locked --no-default-groups --group pytest --no-install-workspace
           uv pip install "$RUNTIME_WHEEL"
-          uv run --no-sync python -c "import importlib.util, pyavd_utils.schema_store, pyavd_utils.validation; \
+          WORKSPACE=$(pwd)
+          PYTHON=$(uv run --no-sync python -c "import sys; print(sys.executable)")
+          cd ..
+          "$PYTHON" -c "import importlib.util, pyavd_utils.schema_store, pyavd_utils.validation; \
             assert importlib.util.find_spec('pyavd_utils_gen') is None; \
             assert not hasattr(pyavd_utils.schema_store, 'compile_schema_archive')"
-          uv pip install "$GENERATION_WHEEL"
-          uv run --no-sync pytest
+          uv pip install "$WORKSPACE/$GENERATION_WHEEL" --python "$PYTHON"
+          "$PYTHON" -m pytest "$WORKSPACE/tests"
