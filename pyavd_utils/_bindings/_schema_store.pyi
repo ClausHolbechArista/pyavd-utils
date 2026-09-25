@@ -6,13 +6,14 @@
 from pathlib import Path
 from typing import Literal
 
-def get_list_primary_key(schema_name: Literal["eos_config"], data_path: list[str]) -> str | None:
+
+def get_list_primary_key(schema_name: Literal["eos_config", "avd_design"], data_path: list[str]) -> str | None:
     """
     Return the primary key for a list schema at the given data path.
 
     Limitation:
-        The only supported schema name is "eos_config". Path resolution does not use caller data
-        or dynamic-key overrides.
+        Dynamic keys in the AVD design schema are not supported today; only static schema paths
+        can be inspected. The supported schema names are "eos_config" and "avd_design".
 
     Args:
         schema_name: The name of the schema to inspect.
