@@ -480,8 +480,8 @@ MIT License
 ================================================================================
 
 Used by:
-  - serde_with 3.23.0
-  - serde_with_macros 3.23.0
+  - serde_with 3.24.0
+  - serde_with_macros 3.24.0
 
 License text:
 --------------------------------------------------------------------------------
@@ -1537,7 +1537,7 @@ Used by:
   - serde_json 1.0.151
   - syn 2.0.119
   - syn 3.0.6
-  - unicode-ident 1.0.24
+  - unicode-ident 1.0.26
   - zmij 1.0.23
 
 License text:
