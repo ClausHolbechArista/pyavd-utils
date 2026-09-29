@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-# The native Rust module is not built in CI, so this suppression is required there.
 from ._bindings import _schema_generation  # pyright: ignore[reportMissingModuleSource]
 
 generate_python_schema_models = _schema_generation.generate_python_schema_models

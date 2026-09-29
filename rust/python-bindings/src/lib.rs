@@ -15,7 +15,6 @@
 )]
 
 mod passwords;
-mod schema_generation;
 mod schema_store;
 mod validation;
 
@@ -35,8 +34,6 @@ pub mod _bindings {
 
     #[pymodule_export]
     use crate::passwords::_passwords;
-    #[pymodule_export]
-    use crate::schema_generation::_schema_generation;
     #[pymodule_export]
     use crate::schema_store::_schema_store;
     #[pymodule_export]

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from pyavd_utils.schema_generation import generate_python_schema_models, generate_python_schema_models_from_paths
-from pyavd_utils.schema_store import compile_schema_archive
+from pyavd_utils_gen.schema_generation import generate_python_schema_models, generate_python_schema_models_from_paths
+from pyavd_utils_gen.schema_store import compile_schema_archive
 
 ARTIFACTS = Path(__file__).parent / "artifacts"
 
