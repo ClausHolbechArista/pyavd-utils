@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Arista Networks, Inc.
 # Use of this source code is governed by the Apache License 2.0
 # that can be found in the LICENSE file.
+import ast
 import subprocess
 import sys
 from json import dumps
@@ -222,3 +223,64 @@ def test_generation_ignores_unsupported_removed_model(tmp_path: Path) -> None:
     generate_python_schema_models(source, "model", generated, "Generated")
 
     assert '"removed"' not in generated.read_text(encoding="UTF-8")
+
+
+def test_generation_keeps_class_var_import_for_model_before_empty_nested_model(tmp_path: Path) -> None:
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "value": {"type": "str"},
+                        "empty_model": {
+                            "type": "dict",
+                            "keys": {
+                                "removed": {
+                                    "type": "str",
+                                    "deprecation": {"warning": True, "removed": True},
+                                }
+                            },
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    generated = tmp_path / "model.py"
+
+    generate_python_schema_models(source, "model", generated, "Generated")
+
+    output = generated.read_text(encoding="UTF-8")
+    assert "from typing import ClassVar" in output
+    ast.parse(output)
+
+
+def test_generation_preserves_strings_in_python_literals(tmp_path: Path) -> None:
+    value = 'quote " backslash \\ newline\ncarriage\r tab\t null\0'
+    object_key = 'key " \\ \n'
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "value": {"type": "str", "default": value, "valid_values": [value]},
+                        "mapping": {"type": "dict", "default": {object_key: value}, "keys": {}},
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    generated = tmp_path / "model.py"
+
+    generate_python_schema_models(source, "model", generated, "Generated")
+
+    tree = ast.parse(generated.read_text(encoding="UTF-8"))
+    string_constants = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    assert string_constants.count(value) >= 3
+    assert object_key in string_constants

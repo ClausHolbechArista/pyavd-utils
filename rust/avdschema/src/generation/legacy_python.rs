@@ -579,7 +579,7 @@ impl ModelPlan {
     }
 
     fn collect_imports(&self, imports: &mut ImportSet) {
-        imports.class_var =
+        imports.class_var |=
             !self.fields.is_empty() || !self.class_vars.is_empty() || self.allow_other_keys;
         imports.avd_model = true;
         match self.base.as_str() {
@@ -986,7 +986,10 @@ fn build_field(
                 .map_or_else(Vec::new, |values| {
                     vec![ClassPlan::Literal(LiteralPlan {
                         name: generated_name.to_owned(),
-                        values: values.iter().map(|value| format!("\"{value}\"")).collect(),
+                        values: values
+                            .iter()
+                            .map(|value| python_string_literal(value))
+                            .collect(),
                     })]
                 });
             let type_hint = if classes.is_empty() {
@@ -1289,7 +1292,7 @@ fn render_default(value: &CompiledValue) -> String {
         CompiledValue::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
         CompiledValue::I64(value) => value.to_string(),
         CompiledValue::U64(value) => value.to_string(),
-        CompiledValue::String(value) => format!("\"{value}\""),
+        CompiledValue::String(value) => python_string_literal(value),
         CompiledValue::List(values) => format!(
             "[{}]",
             values
@@ -1302,11 +1305,46 @@ fn render_default(value: &CompiledValue) -> String {
             "{{{}}}",
             values
                 .iter()
-                .map(|(key, child)| format!("\"{key}\": {}", render_default(child)))
+                .map(|(key, child)| {
+                    format!("{}: {}", python_string_literal(key), render_default(child))
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
     }
+}
+
+/// Render schema text as a double-quoted Python string literal.
+///
+/// Keeping ordinary printable text unchanged preserves the established generated output, while
+/// escaping syntax-significant and control characters keeps arbitrary schema values lossless.
+fn python_string_literal(value: &str) -> String {
+    let mut literal = String::with_capacity(value.len() + 2);
+    literal.push('"');
+    for character in value.chars() {
+        match character {
+            '\\' => literal.push_str("\\\\"),
+            '"' => literal.push_str("\\\""),
+            '\n' => literal.push_str("\\n"),
+            '\r' => literal.push_str("\\r"),
+            '\t' => literal.push_str("\\t"),
+            '\u{0008}' => literal.push_str("\\b"),
+            '\u{000c}' => literal.push_str("\\f"),
+            character if character.is_control() => {
+                let code_point = u32::from(character);
+                if code_point <= 0xff {
+                    let _ = write!(literal, "\\x{code_point:02x}");
+                } else if code_point <= 0xffff {
+                    let _ = write!(literal, "\\u{code_point:04x}");
+                } else {
+                    let _ = write!(literal, "\\U{code_point:08x}");
+                }
+            }
+            character => literal.push(character),
+        }
+    }
+    literal.push('"');
+    literal
 }
 
 #[derive(Default)]
