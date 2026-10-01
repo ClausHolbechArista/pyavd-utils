@@ -179,8 +179,6 @@ def _pascal(value: str) -> str:
 
 def _identifier(value: str) -> str:
     identifier = re.sub(r"\W", "_", value)
-    identifier = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", identifier)
-    identifier = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", identifier).lower()
     if not identifier or identifier[0].isdigit() or keyword.iskeyword(identifier) or identifier in _RUST_KEYWORDS:
         identifier = f"field_{identifier}"
     return identifier
@@ -271,6 +269,7 @@ def _render_pyi(
     output = [
         "# Copyright (c) 2026 Arista Networks, Inc.\n",
         "# Generated from the AVD schema. Do not edit by hand.\n",
+        "# ruff: noqa: N802\n",
         "from collections.abc import Sequence\n\n",
         "class BoolValue:\n    @property\n    def value(self) -> bool | None: ...\n\n",
         "class IntValue:\n    @property\n    def value(self) -> int | None: ...\n\n",
@@ -289,7 +288,7 @@ def _render_pyi(
             if item is not None:
                 target_kind, target = _target(item)
                 item_type = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
-            output.append(f"class {name}(Sequence[{item_type}]): ...\n\n")
+            output.append(f"class {name}(\n    Sequence[{item_type}],\n): ...\n\n")
             continue
         output.append(f"class {name}:\n")
         static_fields = [field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Key"]
@@ -300,7 +299,7 @@ def _render_pyi(
             key = _relation(field)[1]
             target_kind, target = _target(field)
             annotation = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
-            output.append(f"    @property\n    def {_identifier(str(key))}(self) -> {annotation} | None: ...\n")
+            output.append(f"    @property\n    def {_identifier(str(key))}(\n        self,\n    ) -> {annotation} | None: ...\n")
         output.append("\n")
     return "".join(output)
 
