@@ -102,11 +102,11 @@ def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path)
         )
 
 
-def test_generate_validated_data_models_escapes_rust_keywords(tmp_path: Path) -> None:
-    """Generate callable names for schema keys reserved by Rust."""
+def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -> None:
+    """Generate snake-case callable names while escaping language keywords."""
     source = tmp_path / "schemas.json"
     source.write_text(
-        json.dumps({"fixture": {"type": "dict", "keys": {"match": {"type": "str"}, "override": {"type": "str"}}}}),
+        json.dumps({"fixture": {"type": "dict", "keys": {"match": {"type": "str"}, "override": {"type": "str"}, "Vxlan1": {"type": "str"}}}}),
         encoding="UTF-8",
     )
     rust = tmp_path / "models.rs"
@@ -118,6 +118,8 @@ def test_generate_validated_data_models_escapes_rust_keywords(tmp_path: Path) ->
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "pub fn field_match(" in rust_source
     assert "pub fn field_override(" in rust_source
+    assert "pub fn vxlan1(" in rust_source
     assert "def field_match(" in pyi_source
     assert "def field_override(" in pyi_source
+    assert "def vxlan1(" in pyi_source
     ast.parse(pyi_source)
