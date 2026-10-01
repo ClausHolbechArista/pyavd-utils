@@ -3,6 +3,7 @@
 # that can be found in the LICENSE file.
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,24 @@ def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path)
             "SchemaGenerationFixture",
             root_keys=["missing"],
         )
+
+
+def test_generate_validated_data_models_escapes_rust_keywords(tmp_path: Path) -> None:
+    """Generate callable names for schema keys reserved by Rust."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps({"fixture": {"type": "dict", "keys": {"match": {"type": "str"}, "override": {"type": "str"}}}}),
+        encoding="UTF-8",
+    )
+    rust = tmp_path / "models.rs"
+    pyi = tmp_path / "models.pyi"
+
+    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture")
+
+    rust_source = rust.read_text(encoding="UTF-8")
+    pyi_source = pyi.read_text(encoding="UTF-8")
+    assert "pub fn field_match(" in rust_source
+    assert "pub fn field_override(" in rust_source
+    assert "def field_match(" in pyi_source
+    assert "def field_override(" in pyi_source
+    ast.parse(pyi_source)

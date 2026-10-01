@@ -16,6 +16,64 @@ from .schema_generation import build_nominal_model_registry
 if TYPE_CHECKING:
     from pathlib import Path
 
+_RUST_KEYWORDS = frozenset(
+    [
+        "abstract",
+        "as",
+        "async",
+        "await",
+        "become",
+        "box",
+        "break",
+        "const",
+        "continue",
+        "crate",
+        "do",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "final",
+        "fn",
+        "for",
+        "gen",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "macro",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "override",
+        "priv",
+        "pub",
+        "ref",
+        "return",
+        "self",
+        "Self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "union",
+        "unsafe",
+        "unsized",
+        "use",
+        "virtual",
+        "where",
+        "while",
+        "yield",
+    ]
+)
+
 
 def generate_validated_data_models(
     source: Path,
@@ -121,7 +179,7 @@ def _pascal(value: str) -> str:
 
 def _identifier(value: str) -> str:
     identifier = re.sub(r"\W", "_", value)
-    if not identifier or identifier[0].isdigit() or keyword.iskeyword(identifier):
+    if not identifier or identifier[0].isdigit() or keyword.iskeyword(identifier) or identifier in _RUST_KEYWORDS:
         identifier = f"field_{identifier}"
     return identifier
 
