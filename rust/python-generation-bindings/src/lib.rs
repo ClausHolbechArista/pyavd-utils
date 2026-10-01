@@ -11,6 +11,7 @@
     reason = "PyO3-facing API names mirror the exported Python module contract"
 )]
 
+mod schema_generation;
 mod schema_store;
 
 #[pyo3::pymodule]
@@ -27,6 +28,8 @@ pub mod _bindings {
         Ok(())
     }
 
+    #[pymodule_export]
+    use crate::schema_generation::_schema_generation;
     #[pymodule_export]
     use crate::schema_store::_schema_store;
 }
