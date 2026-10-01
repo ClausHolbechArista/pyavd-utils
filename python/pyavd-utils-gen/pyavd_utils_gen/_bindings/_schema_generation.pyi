@@ -5,6 +5,9 @@
 from collections.abc import Mapping
 from pathlib import Path
 
+def build_nominal_model_registry(source: Path, schema_name: str) -> str:
+    """Return the occurrence-specific nominal model registry as JSON."""
+
 def generate_python_schema_models(
     source: Path,
     schema_name: str,

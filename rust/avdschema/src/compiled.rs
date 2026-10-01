@@ -46,7 +46,9 @@ pub(crate) const ARCHIVE_FORMAT_VERSION: u32 = 1;
 pub(crate) const ARCHIVE_HEADER_LENGTH: usize = 16;
 
 /// Stable identifier of a node in one of the typed schema tables.
-#[derive(Archive, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Archive, Serialize, Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash,
+)]
 #[rkyv(derive(Clone, Copy, Debug, PartialEq, Eq, Hash))]
 pub enum SchemaId {
     /// Boolean schema table index.

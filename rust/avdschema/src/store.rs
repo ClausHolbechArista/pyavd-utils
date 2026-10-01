@@ -145,6 +145,14 @@ impl Store {
         })
     }
 
+    /// Return a content hash of the exact compiled archive backing this store.
+    ///
+    /// Validated-data archives record this value so generated model IDs are never interpreted
+    /// against a different schema build.
+    pub fn archive_hash(&self) -> [u8; 32] {
+        *blake3::hash(self.archive.borrow_owner().as_ref()).as_bytes()
+    }
+
     /// Return the root schema view for a schema name, including AVD aliases.
     pub fn get(&self, schema_name: &str) -> Option<SchemaView<'_>> {
         let archived = self.archived();
