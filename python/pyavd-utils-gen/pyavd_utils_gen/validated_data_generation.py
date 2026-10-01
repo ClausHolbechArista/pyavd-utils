@@ -266,7 +266,7 @@ def _render_pyi(
     fields: list[dict[str, Any]],
     names: dict[int, str],
 ) -> str:
-    output = [
+    header = [
         "# Copyright (c) 2026 Arista Networks, Inc.\n",
         "# Generated from the AVD schema. Do not edit by hand.\n",
         "# ruff: noqa: N802\n",
@@ -276,6 +276,7 @@ def _render_pyi(
         "class StrValue:\n    @property\n    def value(self) -> str | None: ...\n\n",
         "class _Value: ...\n\n",
     ]
+    definitions: list[tuple[str, bool]] = []
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         by_parent.setdefault(int(field["parent"]), []).append(field)
@@ -288,20 +289,25 @@ def _render_pyi(
             if item is not None:
                 target_kind, target = _target(item)
                 item_type = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
-            output.append(f"class {name}(\n    Sequence[{item_type}],\n): ...\n\n")
+            definitions.append((f"class {name}(\n    Sequence[{item_type}],\n): ...", True))
             continue
-        output.append(f"class {name}:\n")
         static_fields = [field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Key"]
         if not static_fields:
-            output.append("    ...\n\n")
+            definitions.append((f"class {name}: ...", True))
             continue
+        body = [f"class {name}:\n"]
         for field in static_fields:
             key = _relation(field)[1]
             target_kind, target = _target(field)
             annotation = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
-            output.append(f"    @property\n    def {_identifier(str(key))}(\n        self,\n    ) -> {annotation} | None: ...\n")
-        output.append("\n")
-    return "".join(output)
+            body.append(f"    @property\n    def {_identifier(str(key))}(\n        self,\n    ) -> {annotation} | None: ...\n")
+        definitions.append(("".join(body).rstrip(), False))
+    output = ["".join(header)]
+    for index, (definition, is_empty) in enumerate(definitions):
+        if index:
+            output.append("\n" if is_empty and definitions[index - 1][1] else "\n\n")
+        output.append(definition)
+    return "".join(output) + "\n"
 
 
 __all__ = ["generate_validated_data_models"]
