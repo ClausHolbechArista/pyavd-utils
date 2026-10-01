@@ -38,6 +38,8 @@ const MAGIC: &[u8; 8] = b"AVDDATA\0";
 const FORMAT_VERSION: u32 = 1;
 const HEADER_LENGTH: usize = 16;
 /// Validation semantics used by typed validated-data archives.
+///
+/// Policy 1 returns coerced data and coercion diagnostics and enables EOS Config key warnings for AVD Design roots.
 pub const VALIDATION_POLICY_ID: u32 = 1;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -127,6 +129,7 @@ pub fn validate_json_to_archive(
     let configuration = Configuration {
         return_coerced_data: true,
         return_coercion_infos: true,
+        warn_eos_config_keys: matches!(schema_name, "avd_design" | "eos_designs"),
         ..Configuration::default()
     };
     let output = schemas.validate_json(input, schema_name, Some(&configuration))?;
@@ -789,5 +792,31 @@ mod tests {
         assert!(!result.published);
         assert!(!destination.exists());
         assert!(!result.validation.errors.is_empty());
+    }
+
+    #[test]
+    fn enables_eos_config_key_warnings_for_avd_design_aliases() {
+        let source = crate::validation::test_utils::get_test_store();
+        let schemas = Store::compile(&source).expect("valid store");
+        let directory = tempfile::tempdir().expect("temporary directory");
+
+        for schema_name in ["avd_design", "eos_designs"] {
+            let destination = directory.path().join(format!("{schema_name}.rkyv"));
+            let result = validate_json_to_archive(
+                &schemas,
+                schema_name,
+                r#"{"key3":"valid_avd_design_key","key1":"eos_config_key"}"#,
+                &destination,
+                REGISTRY,
+            )
+            .expect("publication");
+            assert!(result.published);
+            assert!(result.validation.errors.is_empty());
+            assert_eq!(result.validation.warnings.len(), 1);
+            assert!(matches!(
+                &result.validation.warnings[0].issue,
+                crate::feedback::WarningIssue::IgnoredEosConfigKey(_)
+            ));
+        }
     }
 }
