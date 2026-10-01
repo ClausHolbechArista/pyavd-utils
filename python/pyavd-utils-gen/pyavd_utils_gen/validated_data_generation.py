@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import keyword
 import re
@@ -22,14 +23,74 @@ def generate_validated_data_models(
     rust_destination: Path,
     pyi_destination: Path,
     root_name: str,
+    root_keys: list[str] | None = None,
 ) -> None:
-    """Generate checked-in Rust views and Python declarations from one schema root."""
+    """
+    Generate checked-in Rust views and Python declarations from one schema root.
+
+    Args:
+        source: Combined source schema containing ``schema_name``.
+        schema_name: Name of the schema root to generate from.
+        rust_destination: Destination for the Rust model registry and views.
+        pyi_destination: Destination for the corresponding Python declarations.
+        root_name: Public name of the root model.
+        root_keys: Optional static root keys to expose. Descendants of selected keys
+            remain complete, while unselected root branches are omitted from the
+            generated API. The runtime validated-data archive remains complete.
+    """
     registry = build_nominal_model_registry(source, schema_name)
+    if root_keys is not None:
+        registry = _project_registry(registry, root_keys)
     models = list(registry["models"])
     fields = list(registry["fields"])
     names = _model_names(models, root_name)
     rust_destination.write_text(_render_rust(registry, models, fields, names), encoding="UTF-8")
     pyi_destination.write_text(_render_pyi(models, fields, names), encoding="UTF-8")
+
+
+def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
+    """Select static root branches while preserving identities from the full registry."""
+    root = int(registry["root"])
+    fields_by_parent: dict[int, list[dict[str, Any]]] = {}
+    for field in registry["fields"]:
+        fields_by_parent.setdefault(int(field["parent"]), []).append(field)
+
+    available_root_keys = {key for field in fields_by_parent.get(root, []) if (relation := _relation(field))[0] == "Key" and (key := relation[1]) is not None}
+    requested_root_keys = set(root_keys)
+    unknown_root_keys = requested_root_keys - available_root_keys
+    if unknown_root_keys:
+        unknown = ", ".join(sorted(unknown_root_keys))
+        msg = f"unknown static root key(s) for validated-data generation: {unknown}"
+        raise ValueError(msg)
+
+    selected_models = {root}
+    selected_fields: set[int] = set()
+    pending_models = [root]
+    while pending_models:
+        parent = pending_models.pop()
+        for field in fields_by_parent.get(parent, []):
+            relation_kind, relation_value = _relation(field)
+            if parent == root and (relation_kind != "Key" or relation_value not in requested_root_keys):
+                continue
+            selected_fields.add(int(field["id"]))
+            target_kind, target = _target(field)
+            if target_kind == "Model" and int(target) not in selected_models:
+                selected_models.add(int(target))
+                pending_models.append(int(target))
+
+    digest = hashlib.sha256()
+    digest.update(bytes(registry["registry_hash"]))
+    for key in sorted(requested_root_keys):
+        encoded_key = key.encode()
+        digest.update(len(encoded_key).to_bytes(8, "little"))
+        digest.update(encoded_key)
+
+    return {
+        **registry,
+        "models": [model for model in registry["models"] if int(model["id"]) in selected_models],
+        "fields": [field for field in registry["fields"] if int(field["id"]) in selected_fields],
+        "registry_hash": list(digest.digest()),
+    }
 
 
 def _model_names(models: list[dict[str, Any]], root_name: str) -> dict[int, str]:
