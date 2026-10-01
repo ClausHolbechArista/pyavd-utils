@@ -7,6 +7,7 @@ exclude = ["rust/test_schema_store"]
 resolver = "2"
 
 [workspace.dependencies]
+blake3 = { version = "1.8.2" }
 derive_more = { version = "2.0.1" }
 log = { version = "0.4.26" }
 mmap-guard = { version = "0.2.2" }
