@@ -1409,7 +1409,7 @@ fn render_imports(output: &mut String, imports: &ImportSet) {
         output.push_str("from pyavd._schema.models.avd_model import AvdModel\n");
     }
     output.push_str("\nif TYPE_CHECKING:\n");
-    output.push_str("    from pyavd._utils import Undefined, UndefinedType\n");
+    output.push_str("    from pyavd._utils.undefined import Undefined, UndefinedType\n");
 }
 
 fn root_base(class_name: &str) -> &str {
