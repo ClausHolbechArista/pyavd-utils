@@ -179,6 +179,8 @@ def _pascal(value: str) -> str:
 
 def _identifier(value: str) -> str:
     identifier = re.sub(r"\W", "_", value)
+    identifier = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", identifier)
+    identifier = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", identifier).lower()
     if not identifier or identifier[0].isdigit() or keyword.iskeyword(identifier) or identifier in _RUST_KEYWORDS:
         identifier = f"field_{identifier}"
     return identifier
@@ -292,7 +294,7 @@ def _render_pyi(
         output.append(f"class {name}:\n")
         static_fields = [field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Key"]
         if not static_fields:
-            output.append("    pass\n\n")
+            output.append("    ...\n\n")
             continue
         for field in static_fields:
             key = _relation(field)[1]
