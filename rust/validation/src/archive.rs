@@ -579,31 +579,31 @@ fn validate_integrity(root: &ArchivedValidatedArchive) -> Result<(), ArchiveErro
             "root value id is outside the value table".to_owned(),
         ));
     }
-    for slot in root.map_slots.iter() {
-        for value in root.values.iter() {
-            let valid = match value {
-                ArchivedValueNode::String(id) => {
-                    usize::try_from(id.0.to_native()).is_ok_and(|id| id < root.strings.len())
-                }
-                ArchivedValueNode::List { start, len, .. } => range_fits(
-                    start.to_native(),
-                    len.to_native(),
-                    root.sequence_slots.len(),
-                ),
-                ArchivedValueNode::Dict { start, len, .. } => {
-                    range_fits(start.to_native(), len.to_native(), root.map_slots.len())
-                }
-                ArchivedValueNode::Null
-                | ArchivedValueNode::Bool(_)
-                | ArchivedValueNode::I64(_)
-                | ArchivedValueNode::U64(_) => true,
-            };
-            if !valid {
-                return Err(ArchiveError::Invalid(
-                    "value node contains an invalid table reference".to_owned(),
-                ));
+    for value in root.values.iter() {
+        let valid = match value {
+            ArchivedValueNode::String(id) => {
+                usize::try_from(id.0.to_native()).is_ok_and(|id| id < root.strings.len())
             }
+            ArchivedValueNode::List { start, len, .. } => range_fits(
+                start.to_native(),
+                len.to_native(),
+                root.sequence_slots.len(),
+            ),
+            ArchivedValueNode::Dict { start, len, .. } => {
+                range_fits(start.to_native(), len.to_native(), root.map_slots.len())
+            }
+            ArchivedValueNode::Null
+            | ArchivedValueNode::Bool(_)
+            | ArchivedValueNode::I64(_)
+            | ArchivedValueNode::U64(_) => true,
+        };
+        if !valid {
+            return Err(ArchiveError::Invalid(
+                "value node contains an invalid table reference".to_owned(),
+            ));
         }
+    }
+    for slot in root.map_slots.iter() {
         if usize::try_from(slot.value.0.to_native()).map_or(true, |id| id >= values)
             || usize::try_from(slot.key.0.to_native()).map_or(true, |id| id >= root.strings.len())
         {
@@ -792,6 +792,39 @@ mod tests {
         assert!(!result.published);
         assert!(!destination.exists());
         assert!(!result.validation.errors.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_value_reference_without_map_slots() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let destination = directory.path().join("invalid.rkyv");
+        let schemas = schemas();
+        let archive = ValidatedArchive {
+            schema_hash: schemas.archive_hash(),
+            registry_hash: REGISTRY.hash,
+            policy_id: VALIDATION_POLICY_ID,
+            root: ValueId(0),
+            values: vec![ValueNode::String(StringId(0))],
+            map_slots: Vec::new(),
+            sequence_slots: Vec::new(),
+            strings: Vec::new(),
+        };
+        let archived = rkyv::to_bytes::<RkyvError>(&archive).expect("serializable archive");
+        let mut bytes = Vec::with_capacity(HEADER_LENGTH + archived.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&VALIDATION_POLICY_ID.to_le_bytes());
+        bytes.extend_from_slice(archived.as_slice());
+        std::fs::write(&destination, bytes).expect("write invalid archive");
+
+        let error = DataStore::from_file(&destination, schemas.archive_hash(), REGISTRY.hash)
+            .expect_err("invalid string id must be rejected");
+
+        assert!(matches!(
+            error,
+            ArchiveError::Invalid(message)
+                if message == "value node contains an invalid table reference"
+        ));
     }
 
     #[test]
