@@ -4,7 +4,7 @@
 import ast
 import subprocess
 import sys
-from json import dumps
+from json import dumps, loads
 from pathlib import Path
 
 import pytest
@@ -40,6 +40,96 @@ def test_schema_documentation_removes_obsolete_markdown(tmp_path: Path) -> None:
 
     assert not obsolete.exists()
     assert preserved.exists()
+
+
+@pytest.mark.parametrize("hide_keys", [False, True])
+@pytest.mark.parametrize("child_table", [None, "child-table"])
+def test_schema_documentation_preserves_dictionary_item_tables(tmp_path: Path, hide_keys: bool, child_table: str | None) -> None:
+    """Dictionary items own table context even though only their keys are rendered."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "items": {
+                            "type": "list",
+                            "documentation_options": {"table": "list-table"},
+                            "items": {
+                                "type": "dict",
+                                "documentation_options": {"table": "item-table", "hide_keys": hide_keys},
+                                "keys": {
+                                    "value": {
+                                        "type": "str",
+                                        **({"documentation_options": {"table": child_table}} if child_table else {}),
+                                    }
+                                },
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    expected_tables = {"list-table", "item-table"}
+    if child_table and not hide_keys:
+        expected_tables.add(child_table)
+    assert {path.stem for path in destination.glob("*.md")} == expected_tables
+    for table in expected_tables:
+        output = (destination / f"{table}.md").read_text(encoding="UTF-8")
+        assert '(## "items")' in output
+        assert '(## "items.[]")' not in output
+        renders_value = table == (child_table or "item-table")
+        assert ('(## "items.[].value")' in output) == renders_value
+        assert ("- value: <str>" in output) == renders_value
+
+    if child_table is None:
+        # Captured from AVD's Python generator, including its item hide_keys behavior.
+        expected = loads((ARTIFACTS / "list_item_documentation.expected.json").read_text(encoding="UTF-8"))
+        assert {path.name: path.read_bytes() for path in destination.glob("*.md")} == {name: contents.encode("UTF-8") for name, contents in expected.items()}
+
+
+@pytest.mark.parametrize("item_type", ["str", "dict"])
+def test_schema_documentation_preserves_nested_list_yaml(tmp_path: Path, item_type: str) -> None:
+    """Keep the Python renderer's missing-key spelling for lists used as list items."""
+    source = tmp_path / "schemas.json"
+    item: dict[str, object] = {"type": item_type}
+    if item_type == "dict":
+        item["keys"] = {"value": {"type": "str"}}
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "outer": {
+                            "type": "list",
+                            "documentation_options": {"table": "outer-table"},
+                            "items": {
+                                "type": "list",
+                                "documentation_options": {"table": "inner-table"},
+                                "items": item,
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    output = (destination / "inner-table.md").read_text(encoding="UTF-8")
+    assert "\n      - None:\n" in output
+    assert "\n      - :\n" not in output
 
 
 def test_schema_documentation_inherits_individual_options_across_references(tmp_path: Path) -> None:

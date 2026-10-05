@@ -5,9 +5,10 @@
 //! Markdown and YAML-example generation for AVD schema documentation.
 //!
 //! Traversal builds a documentation-specific tree containing only occurrences
-//! that can contribute to rendered output. Documentation boundaries are applied
-//! during traversal, so schemas below `hide_keys` are never expanded merely to
-//! be discarded by the renderer.
+//! that can contribute to rendered output. Dictionary `hide_keys` boundaries
+//! stop traversal, except for dictionary list items: their keys are rendered
+//! directly by the list, while the item supplies table-discovery and inheritance
+//! context. The item itself produces no table row or YAML line.
 
 #![allow(
     clippy::as_conversions,
@@ -91,7 +92,17 @@ struct DocNode {
     is_primary_key: bool,
     is_unique: bool,
     is_first_list_key: bool,
+    kind: DocNodeKind,
     children: Vec<DocNode>,
+}
+
+/// Controls whether an occurrence renders itself or supplies context for its children.
+#[derive(Debug, PartialEq, Eq)]
+enum DocNodeKind {
+    /// Render the occurrence when it belongs to the selected table.
+    Standard,
+    /// Dictionary list items supply table context but render only their keys.
+    TransparentListItem,
 }
 
 impl DocNode {
@@ -149,8 +160,7 @@ struct DocFrame {
 enum DocFrameKind {
     Node(DocDraft),
     TransparentListItem {
-        path: Vec<String>,
-        table: Option<String>,
+        draft: DocDraft,
         primary_key: Option<String>,
         unique_primary_key: bool,
         visited_keys: usize,
@@ -248,8 +258,7 @@ impl<'a> DocumentationProjection<'a> {
                         false,
                     )),
                     DocFrameKind::TransparentListItem {
-                        path,
-                        table,
+                        draft: parent,
                         primary_key,
                         unique_primary_key,
                         visited_keys,
@@ -258,8 +267,8 @@ impl<'a> DocumentationProjection<'a> {
                         let draft = Self::draft_with_context(
                             occurrence,
                             Some(name.to_owned()),
-                            path_with(path, name),
-                            table.as_deref(),
+                            path_with(&parent.path, name),
+                            parent.table.as_deref(),
                             is_primary_key,
                             is_primary_key && *unique_primary_key,
                             *visited_keys == 0,
@@ -352,10 +361,18 @@ impl SchemaVisitor for DocumentationProjection<'_> {
                 unreachable!("a traversed list item always has a rendered list parent");
             };
             let list = &self.compiled.lists[schema_index(parent.schema_id)];
+            let draft = Self::draft_with_context(
+                occurrence,
+                None,
+                path_with(&parent.path, "[]"),
+                parent.table.as_deref(),
+                false,
+                false,
+                false,
+            );
             self.stack.push(DocFrame {
                 kind: DocFrameKind::TransparentListItem {
-                    path: path_with(&parent.path, "[]"),
-                    table: parent.table.clone(),
+                    draft,
                     primary_key: list.primary_key.clone(),
                     unique_primary_key: !list.allow_duplicate_primary_key,
                     visited_keys: 0,
@@ -375,7 +392,13 @@ impl SchemaVisitor for DocumentationProjection<'_> {
             .documentation_options
             .as_ref()
             .is_some_and(|options| options.hide_keys);
-        Ok(if hide_keys {
+        // The list renderer visits dictionary item keys directly, bypassing the item's
+        // hide_keys option. Retain the item for table discovery, where hide_keys does apply.
+        let transparent = self
+            .stack
+            .last()
+            .is_some_and(|frame| matches!(frame.kind, DocFrameKind::TransparentListItem { .. }));
+        Ok(if hide_keys && !transparent {
             TraversalControl::SkipChildren
         } else {
             TraversalControl::Descend
@@ -386,15 +409,14 @@ impl SchemaVisitor for DocumentationProjection<'_> {
         let Some(mut frame) = self.stack.pop() else {
             unreachable!("leave is paired with every successful enter");
         };
+        let kind = if matches!(frame.kind, DocFrameKind::TransparentListItem { .. }) {
+            DocNodeKind::TransparentListItem
+        } else {
+            DocNodeKind::Standard
+        };
         match frame.kind {
             DocFrameKind::Ignored => {}
-            DocFrameKind::TransparentListItem { .. } => {
-                let Some(parent) = self.stack.last_mut() else {
-                    unreachable!("transparent list items always have a parent");
-                };
-                parent.children.append(&mut frame.children);
-            }
-            DocFrameKind::Node(draft) => {
+            DocFrameKind::Node(draft) | DocFrameKind::TransparentListItem { draft, .. } => {
                 frame.dynamic_children.append(&mut frame.children);
                 let node = DocNode {
                     schema_id: draft.schema_id,
@@ -404,6 +426,7 @@ impl SchemaVisitor for DocumentationProjection<'_> {
                     is_primary_key: draft.is_primary_key,
                     is_unique: draft.is_unique,
                     is_first_list_key: draft.is_first_list_key,
+                    kind,
                     children: frame.dynamic_children,
                 };
                 if let Some(parent) = self.stack.last_mut() {
@@ -445,6 +468,12 @@ fn render_table_rows(
     table: &str,
     rows: &mut Vec<String>,
 ) {
+    if node.kind == DocNodeKind::TransparentListItem {
+        for child in &node.children {
+            render_table_rows(compiled, child, table, rows);
+        }
+        return;
+    }
     if !node.should_render(compiled, table) {
         return;
     }
@@ -621,6 +650,12 @@ fn render_yaml_lines(
     lines: &mut Vec<String>,
     annotations: &mut Vec<String>,
 ) {
+    if node.kind == DocNodeKind::TransparentListItem {
+        for child in &node.children {
+            render_yaml_lines(compiled, child, table, lines, annotations);
+        }
+        return;
+    }
     if is_removed(compiled, node) || !node.should_render(compiled, table) {
         return;
     }
@@ -728,7 +763,9 @@ fn render_yaml_field(
             };
             format!(
                 "{indentation}{}:{item_marker}{properties}{annotation}",
-                node.key.as_deref().unwrap_or_default()
+                // The Python renderer interpolates its missing key as `None` for
+                // a list nested directly inside another list.
+                node.key.as_deref().unwrap_or("None")
             )
         }
         SchemaId::Dict(index) => {
