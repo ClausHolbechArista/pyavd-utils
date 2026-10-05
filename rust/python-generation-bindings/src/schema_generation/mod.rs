@@ -140,6 +140,22 @@ pub(crate) mod _schema_generation {
                 "Error while generating schema documentation: {err}"
             ))
         })?;
+        // Authored names follow the metaschema's `[a-z0-9_-]+` pattern. Derived
+        // names can also contain dots from dynamic-key paths. Check every final
+        // name before filesystem changes, including when the metaschema was bypassed.
+        for (table, _) in &generated {
+            if table.is_empty()
+                || !table.bytes().all(|character| {
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || matches!(character, b'_' | b'-' | b'.')
+                })
+            {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid documentation table name {table:?}: expected lowercase ASCII letters, digits, underscores, hyphens, or dots"
+                )));
+            }
+        }
         std::fs::create_dir_all(destination).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "Error while creating schema documentation directory '{}': {err}",

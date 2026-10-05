@@ -42,6 +42,64 @@ def test_schema_documentation_removes_obsolete_markdown(tmp_path: Path) -> None:
     assert preserved.exists()
 
 
+@pytest.mark.parametrize("table", ["", "../escape", "nested/escape", r"..\escape", "/absolute", "C:escape", "UPPER", "name\n", "name\x00"])
+@pytest.mark.parametrize("existing_directory", [False, True])
+def test_schema_documentation_rejects_invalid_table_before_filesystem_changes(tmp_path: Path, table: str, existing_directory: bool) -> None:
+    """Reject the whole output batch before creating, cleaning, or writing its directory."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "valid": {"type": "str", "documentation_options": {"table": "valid-table"}},
+                        "invalid": {"type": "str", "documentation_options": {"table": table}},
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+    outside = tmp_path / "escape.md"
+    outside.write_bytes(b"outside output directory")
+    if existing_directory:
+        destination.mkdir()
+        (destination / "obsolete.md").write_bytes(b"keep obsolete until validation succeeds")
+        (destination / "valid-table.md").write_bytes(b"keep existing output")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Invalid documentation table name"):
+        generate_schema_documentation(source, "model", destination)
+
+    assert destination.exists() == existing_directory
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_schema_documentation_accepts_compatible_filename_characters(tmp_path: Path) -> None:
+    """Accept release table names and dotted names derived from dynamic-key paths."""
+    source = tmp_path / "schemas.json"
+    tables = ["dot1x-settings", "network-services-l2vlans-settings", "ptp_settings"]
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {f"key_{index}": {"type": "str", "documentation_options": {"table": table}} for index, table in enumerate(tables)},
+                    "dynamic_keys": {"custom_node_type_keys.key": {"type": "dict", "documentation_options": {"hide_keys": True}}},
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    assert {path.stem for path in destination.glob("*.md")} == {*tables, "custom-node-type-keys.key"}
+
+
 @pytest.mark.parametrize("hide_keys", [False, True])
 @pytest.mark.parametrize("child_table", [None, "child-table"])
 def test_schema_documentation_preserves_dictionary_item_tables(tmp_path: Path, hide_keys: bool, child_table: str | None) -> None:

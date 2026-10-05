@@ -6,10 +6,20 @@ from collections.abc import Mapping
 from pathlib import Path
 
 def generate_schema_documentation(source: Path, schema_name: str, destination: Path) -> None:
-    """Generate Markdown schema documentation from a raw schema store."""
+    """
+    Generate Markdown schema documentation from a raw schema store.
+
+    Output names may contain lowercase ASCII letters, digits, underscores, hyphens,
+    and dots. Invalid names raise ValueError before directory creation, cleanup, or writes.
+    """
 
 def generate_schema_documentation_from_paths(sources: Mapping[str, Path], schema_name: str, destination: Path) -> None:
-    """Generate Markdown schema documentation from individually named schema files."""
+    """
+    Generate Markdown schema documentation from individually named schema files.
+
+    Output names may contain lowercase ASCII letters, digits, underscores, hyphens,
+    and dots. Invalid names raise ValueError before directory creation, cleanup, or writes.
+    """
 
 def generate_python_schema_models(
     source: Path,
