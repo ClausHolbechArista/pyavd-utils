@@ -4,15 +4,226 @@
 import ast
 import subprocess
 import sys
-from json import dumps
+from json import dumps, loads
 from pathlib import Path
 
 import pytest
 
-from pyavd_utils_gen.schema_generation import generate_python_schema_models, generate_python_schema_models_from_paths
+from pyavd_utils_gen.schema_generation import (
+    generate_python_schema_models,
+    generate_python_schema_models_from_paths,
+    generate_schema_documentation,
+    generate_schema_documentation_from_paths,
+)
 from pyavd_utils_gen.schema_store import compile_schema_archive
 
 ARTIFACTS = Path(__file__).parent / "artifacts"
+
+
+def test_regenerate_schema_documentation_fixture() -> None:
+    """Regenerate committed documentation so a mismatch remains visible in git diff."""
+    destination = ARTIFACTS / "schema_documentation_fixture.expected"
+    expected = {path.name: path.read_bytes() for path in destination.glob("*.md")}
+
+    generate_schema_documentation(ARTIFACTS / "schemas.json", "schema_documentation_fixture", destination)
+
+    assert {path.name: path.read_bytes() for path in destination.glob("*.md")} == expected
+
+
+def test_schema_documentation_removes_obsolete_markdown(tmp_path: Path) -> None:
+    obsolete = tmp_path / "obsolete.md"
+    preserved = tmp_path / "preserved.txt"
+    obsolete.touch()
+    preserved.touch()
+
+    generate_schema_documentation(ARTIFACTS / "schemas.json", "schema_documentation_fixture", tmp_path)
+
+    assert not obsolete.exists()
+    assert preserved.exists()
+
+
+@pytest.mark.parametrize("table", ["", "../escape", "nested/escape", r"..\escape", "/absolute", "C:escape", "UPPER", "name\n", "name\x00"])
+@pytest.mark.parametrize("existing_directory", [False, True])
+def test_schema_documentation_rejects_invalid_table_before_filesystem_changes(tmp_path: Path, table: str, existing_directory: bool) -> None:
+    """Reject the whole output batch before creating, cleaning, or writing its directory."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "valid": {"type": "str", "documentation_options": {"table": "valid-table"}},
+                        "invalid": {"type": "str", "documentation_options": {"table": table}},
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+    outside = tmp_path / "escape.md"
+    outside.write_bytes(b"outside output directory")
+    if existing_directory:
+        destination.mkdir()
+        (destination / "obsolete.md").write_bytes(b"keep obsolete until validation succeeds")
+        (destination / "valid-table.md").write_bytes(b"keep existing output")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Invalid documentation table name"):
+        generate_schema_documentation(source, "model", destination)
+
+    assert destination.exists() == existing_directory
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+def test_schema_documentation_accepts_compatible_filename_characters(tmp_path: Path) -> None:
+    """Accept release table names and dotted names derived from dynamic-key paths."""
+    source = tmp_path / "schemas.json"
+    tables = ["dot1x-settings", "network-services-l2vlans-settings", "ptp_settings"]
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {f"key_{index}": {"type": "str", "documentation_options": {"table": table}} for index, table in enumerate(tables)},
+                    "dynamic_keys": {"custom_node_type_keys.key": {"type": "dict", "documentation_options": {"hide_keys": True}}},
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    assert {path.stem for path in destination.glob("*.md")} == {*tables, "custom-node-type-keys.key"}
+
+
+@pytest.mark.parametrize("hide_keys", [False, True])
+@pytest.mark.parametrize("child_table", [None, "child-table"])
+def test_schema_documentation_preserves_dictionary_item_tables(tmp_path: Path, hide_keys: bool, child_table: str | None) -> None:
+    """Dictionary items own table context even though only their keys are rendered."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "items": {
+                            "type": "list",
+                            "documentation_options": {"table": "list-table"},
+                            "items": {
+                                "type": "dict",
+                                "documentation_options": {"table": "item-table", "hide_keys": hide_keys},
+                                "keys": {
+                                    "value": {
+                                        "type": "str",
+                                        **({"documentation_options": {"table": child_table}} if child_table else {}),
+                                    }
+                                },
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    expected_tables = {"list-table", "item-table"}
+    if child_table and not hide_keys:
+        expected_tables.add(child_table)
+    assert {path.stem for path in destination.glob("*.md")} == expected_tables
+    for table in expected_tables:
+        output = (destination / f"{table}.md").read_text(encoding="UTF-8")
+        assert '(## "items")' in output
+        assert '(## "items.[]")' not in output
+        renders_value = table == (child_table or "item-table")
+        assert ('(## "items.[].value")' in output) == renders_value
+        assert ("- value: <str>" in output) == renders_value
+
+    if child_table is None:
+        # Captured from AVD's Python generator, including its item hide_keys behavior.
+        expected = loads((ARTIFACTS / "list_item_documentation.expected.json").read_text(encoding="UTF-8"))
+        assert {path.name: path.read_bytes() for path in destination.glob("*.md")} == {name: contents.encode("UTF-8") for name, contents in expected.items()}
+
+
+@pytest.mark.parametrize("item_type", ["str", "dict"])
+def test_schema_documentation_preserves_nested_list_yaml(tmp_path: Path, item_type: str) -> None:
+    """Keep the Python renderer's missing-key spelling for lists used as list items."""
+    source = tmp_path / "schemas.json"
+    item: dict[str, object] = {"type": item_type}
+    if item_type == "dict":
+        item["keys"] = {"value": {"type": "str"}}
+    source.write_text(
+        dumps(
+            {
+                "model": {
+                    "type": "dict",
+                    "keys": {
+                        "outer": {
+                            "type": "list",
+                            "documentation_options": {"table": "outer-table"},
+                            "items": {
+                                "type": "list",
+                                "documentation_options": {"table": "inner-table"},
+                                "items": item,
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    destination = tmp_path / "output"
+
+    generate_schema_documentation(source, "model", destination)
+
+    output = (destination / "inner-table.md").read_text(encoding="UTF-8")
+    assert "\n      - None:\n" in output
+    assert "\n      - :\n" not in output
+
+
+def test_schema_documentation_inherits_individual_options_across_references(tmp_path: Path) -> None:
+    shared = tmp_path / "shared.json"
+    shared.write_text(
+        dumps(
+            {
+                "type": "dict",
+                "documentation_options": {"table": "shared", "hide_keys": True},
+                "keys": {"hidden": {"type": "str"}},
+            }
+        ),
+        encoding="UTF-8",
+    )
+    model = tmp_path / "model.json"
+    model.write_text(
+        dumps(
+            {
+                "type": "dict",
+                "keys": {
+                    "visible": {
+                        "type": "dict",
+                        "$ref": "shared#",
+                        "documentation_options": {"table": "visible"},
+                    }
+                },
+            }
+        ),
+        encoding="UTF-8",
+    )
+
+    generate_schema_documentation_from_paths({"shared": shared, "model": model}, "model", tmp_path / "output")
+
+    output = (tmp_path / "output/visible.md").read_text(encoding="UTF-8")
+    assert "visible: <dict>" in output
+    assert "hidden" not in output
 
 
 def test_regenerate_python_model_fixture() -> None:
