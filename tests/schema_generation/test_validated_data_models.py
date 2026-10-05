@@ -29,7 +29,10 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     rust_source = rust.read_text(encoding="UTF-8")
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "pub const REGISTRY: ModelRegistry" in rust_source
-    assert "pub struct SchemaGenerationFixtureView<'a>(DictView<'a>);" in rust_source
+    assert "pub mod schema_generation_fixture {" in rust_source
+    assert "pub struct InterfaceProfiles<'a>(::validation::archive::ListView<'a>);" in rust_source
+    assert "pub mod interface_profiles {" in rust_source
+    assert "pub struct Item<'a>(::validation::archive::DictView<'a>);" in rust_source
     assert "pub fn interface_profiles(" in rust_source
     assert "class SchemaGenerationFixture:" in pyi_source
     ast.parse(pyi_source)
@@ -83,8 +86,8 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     full_accounting = next(line for line in full_source.splitlines() if 'relation: FieldRelation::Key("accounting")' in line)
     projected_accounting = next(line for line in projected_source.splitlines() if 'relation: FieldRelation::Key("accounting")' in line)
     assert projected_accounting == full_accounting
-    full_hash = next(line for line in full_source.splitlines() if line.startswith("pub const REGISTRY_HASH"))
-    projected_hash = next(line for line in projected_source.splitlines() if line.startswith("pub const REGISTRY_HASH"))
+    full_hash = next(line for line in full_source.splitlines() if line.startswith("const REGISTRY_HASH"))
+    projected_hash = next(line for line in projected_source.splitlines() if line.startswith("const REGISTRY_HASH"))
     assert projected_hash != full_hash
     ast.parse(projected_pyi_source)
 
@@ -106,7 +109,22 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
     """Escape language keywords while preserving case-distinct schema names."""
     source = tmp_path / "schemas.json"
     source.write_text(
-        json.dumps({"fixture": {"type": "dict", "keys": {"match": {"type": "str"}, "override": {"type": "str"}, "Vxlan1": {"type": "str"}}}}),
+        json.dumps(
+            {
+                "fixture": {
+                    "type": "dict",
+                    "keys": {
+                        "match": {"type": "str"},
+                        "override": {"type": "str"},
+                        "Vxlan1": {"type": "dict"},
+                        "vxlan1": {"type": "dict"},
+                        "foo-bar": {"type": "dict"},
+                        "foo_bar": {"type": "dict"},
+                        "View": {"type": "dict"},
+                    },
+                }
+            }
+        ),
         encoding="UTF-8",
     )
     rust = tmp_path / "models.rs"
@@ -119,7 +137,12 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
     assert "pub fn field_match(" in rust_source
     assert "pub fn field_override(" in rust_source
     assert "pub fn Vxlan1(" in rust_source
+    assert "pub fn vxlan1(" in rust_source
+    assert rust_source.count("pub struct Vxlan1Slot") == 2
+    assert rust_source.count("pub struct FooBarSlot") == 2
+    assert "pub struct View<'a>" in rust_source
     assert "def field_match(" in pyi_source
     assert "def field_override(" in pyi_source
     assert "def Vxlan1(" in pyi_source
+    assert "def vxlan1(" in pyi_source
     ast.parse(pyi_source)
