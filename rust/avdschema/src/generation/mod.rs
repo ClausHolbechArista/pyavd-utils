@@ -4,12 +4,12 @@
 
 //! Schema traversal and artifact generators.
 
-mod legacy_markdown;
 mod legacy_python;
+mod markdown;
 mod traversal;
 
-pub use self::legacy_markdown::DocumentationGenerationError;
-pub use self::legacy_markdown::generate_markdown_documentation;
 pub use self::legacy_python::GenerationError;
 pub use self::legacy_python::generate_python_models;
 pub use self::legacy_python::generate_python_models_projection;
+pub use self::markdown::DocumentationGenerationError;
+pub use self::markdown::generate_markdown_documentation;
