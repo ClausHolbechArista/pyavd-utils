@@ -66,6 +66,8 @@ def test_generate_metaschema(tmp_path: Path) -> None:
     assert int_convert_type["enum"] == ["bool", "str", "float"]
     assert schema["definitions"]["StrConvertType"]["enum"] == ["bool", "int", "float"]
     assert schema["definitions"]["Pattern"]["format"] == "regex"
+    for definition in ("DocumentationOptions", "DocumentationOptionsDict"):
+        assert schema["definitions"][definition]["properties"]["table"]["pattern"] == "^[a-z0-9_-]+$"
 
 
 def test_generate_metaschema_errors_for_missing_parent(tmp_path: Path) -> None:
