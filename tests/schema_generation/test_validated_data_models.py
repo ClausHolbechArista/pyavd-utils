@@ -24,6 +24,7 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
         rust,
         pyi,
         "SchemaGenerationFixture",
+        "SchemaGenerationFixture",
     )
 
     rust_source = rust.read_text(encoding="UTF-8")
@@ -56,12 +57,14 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         full_rust,
         full_pyi,
         "SchemaGenerationFixture",
+        "SchemaGenerationFixture",
     )
     generate_validated_data_models(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         projected_rust,
         projected_pyi,
+        "SchemaGenerationFixture",
         "SchemaGenerationFixture",
         root_keys=["accounting", "interface_profiles"],
     )
@@ -70,6 +73,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         "schema_generation_fixture",
         reordered_rust,
         reordered_pyi,
+        "SchemaGenerationFixture",
         "SchemaGenerationFixture",
         root_keys=["interface_profiles", "accounting"],
     )
@@ -104,6 +108,7 @@ def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path)
             tmp_path / "models.rs",
             tmp_path / "models.pyi",
             "SchemaGenerationFixture",
+            "SchemaGenerationFixture",
             root_keys=["missing"],
         )
 
@@ -133,7 +138,7 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models.pyi"
 
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture")
+    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = rust.read_text(encoding="UTF-8")
     pyi_source = pyi.read_text(encoding="UTF-8")
@@ -149,3 +154,26 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
     assert "def Vxlan1(" in pyi_source
     assert "def vxlan1(" in pyi_source
     ast.parse(pyi_source)
+
+
+def test_generate_validated_data_models_uses_language_specific_root_names(tmp_path: Path) -> None:
+    """Honor the naming convention selected independently for each generated language."""
+    rust = tmp_path / "models.rs"
+    pyi = tmp_path / "models.pyi"
+
+    generate_validated_data_models(
+        ARTIFACTS / "schemas.json",
+        "schema_generation_fixture",
+        rust,
+        pyi,
+        "AvdDesign",
+        "AVDDesign",
+        root_keys=["accounting"],
+    )
+
+    rust_source = rust.read_text(encoding="UTF-8")
+    pyi_source = pyi.read_text(encoding="UTF-8")
+    assert "pub mod avd_design {" in rust_source
+    assert "pub struct AvdDesign<'a>" in rust_source
+    assert "class AVDDesign:" in pyi_source
+    assert "class AvdDesign:" not in pyi_source
