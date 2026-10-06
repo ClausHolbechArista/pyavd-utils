@@ -1,6 +1,8 @@
 # Copyright (c) 2025-2026 Arista Networks, Inc.
 # Use of this source code is governed by the Apache License 2.0
 # that can be found in the LICENSE file.
+from json import dumps
+
 import pytest
 
 from pyavd_utils.validation import validate_json, validate_json_with_adhoc_schema
@@ -32,6 +34,31 @@ def test_validate_json_with_adhoc_schema() -> None:
     assert validation_result.violations[0].message == "The value '1234' is above the maximum allowed '1233'."
     assert len(validation_result.deprecations) == 0
     assert len(validation_result.ignored_eos_config_keys) == 0
+
+
+def test_validate_json_with_adhoc_schema_root_properties() -> None:
+    """Resolve definitions and dynamic keys declared on an ad hoc schema root."""
+    schema = {
+        "type": "dict",
+        "$id": "adhoc",
+        "$schema": "avd_meta_schema",
+        "$defs": {"value": {"type": "int", "max": 1233}},
+        "keys": {
+            "selectors": {"type": "list", "items": {"type": "str"}},
+            "value": {"type": "int", "$ref": "adhoc#/$defs/value"},
+        },
+        "dynamic_keys": {"selectors": {"type": "int", "$ref": "adhoc#/$defs/value"}},
+    }
+
+    result = validate_json_with_adhoc_schema(dumps({"selectors": ["dynamic"], "value": 1234, "dynamic": 1234}), dumps(schema))
+
+    assert len(result.violations) == 2
+    assert {(tuple(violation.path), violation.message) for violation in result.violations} == {
+        (("value",), "The value '1234' is above the maximum allowed '1233'."),
+        (("dynamic",), "The value '1234' is above the maximum allowed '1233'."),
+    }
+    assert not result.deprecations
+    assert not result.ignored_eos_config_keys
 
 
 @pytest.mark.usefixtures("init_store")

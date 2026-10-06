@@ -118,11 +118,15 @@ def validate_json_with_adhoc_schema(
     configuration: Configuration | None = None,
 ) -> ValidationResult:
     """
-    Validate data against the given schema.
+    Validate data against an ad hoc dictionary-root schema.
+
+    Root properties such as ``dynamic_keys`` and ``$defs`` are supported. References
+    within this document use the schema name ``adhoc``, for example
+    ``adhoc#/$defs/value``. The root's ``$id`` is metadata and does not change that name.
 
     Args:
         data_as_json: Structured data dumped as JSON.
-        schema_as_json: A fully resolved schema dumped as JSON.
+        schema_as_json: A dictionary-root schema dumped as JSON.
         configuration: Optional configuration for validation behavior.
 
     Returns:

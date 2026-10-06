@@ -29,6 +29,21 @@ pub struct StoreSource {
 }
 
 impl StoreSource {
+    /// Load one JSON schema document as a named dictionary root.
+    ///
+    /// Unlike [`Load::from_json`], the input is a schema document rather than a mapping of
+    /// schema names to documents. Deserialization accepts root-only properties and preserves
+    /// the input line and column in errors. The supplied name is used for reference resolution.
+    pub fn from_schema_json(
+        schema_name: &str,
+        schema_json: &str,
+    ) -> Result<Self, serde_json::Error> {
+        let schema = serde_json::from_str::<SourceRootSchema>(schema_json)?;
+        Ok(Self {
+            schemas: HashMap::from([(schema_name.to_owned(), schema)]),
+        })
+    }
+
     /// Return the schema names present in this store.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut schema_names: Vec<_> = self.schemas.keys().map(String::as_str).collect();
@@ -89,7 +104,6 @@ mod tests {
     use super::Load as _;
     #[cfg(feature = "dump_load_files")]
     use crate::Dump as _;
-    #[cfg(feature = "dump_load_files")]
     use crate::StoreSource;
     #[cfg(feature = "dump_load_files")]
     use crate::utils::test_utils::get_avd_store;
