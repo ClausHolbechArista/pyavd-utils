@@ -16,18 +16,21 @@ ARTIFACTS = Path(__file__).parent / "artifacts"
 def test_generate_validated_data_models(tmp_path: Path) -> None:
     """Generate nominal Rust views and Python declarations from the shared fixture."""
     rust = tmp_path / "models.rs"
+    python = tmp_path / "models.py"
     pyi = tmp_path / "models.pyi"
 
     generate_validated_data_models(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         rust,
+        python,
         pyi,
         "SchemaGenerationFixture",
         "SchemaGenerationFixture",
     )
 
     rust_source = rust.read_text(encoding="UTF-8")
+    python_source = python.read_text(encoding="UTF-8")
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "pub const REGISTRY: ModelRegistry" in rust_source
     assert "pub mod schema_generation_fixture {" in rust_source
@@ -35,26 +38,36 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     assert "pub mod interface_profiles {" in rust_source
     assert "pub struct Item<'a>(::validation::archive::DictView<'a>);" in rust_source
     assert "pub fn interface_profiles(" in rust_source
+    assert "PrimaryKeyDescriptor { model:" in rust_source
+    assert "pub fn get_by_primary_key(" in rust_source
+    assert "class SchemaGenerationFixture(_DictView):" in python_source
+    assert "class SchemaGenerationFixtureInterfaceProfilesList(_ListView):" in python_source
+    assert "def __getitem__(self, key: str)" in python_source
     assert "class SchemaGenerationFixture:" in pyi_source
     assert "class StrValue:" not in pyi_source
-    assert "Sequence[str]" in pyi_source
-    assert "-> str | None" in pyi_source
+    assert "Sequence[str | None]" in pyi_source
+    assert "-> str | UndefinedType | None" in pyi_source
+    ast.parse(python_source)
     ast.parse(pyi_source)
 
 
 def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path) -> None:
     """Keep selected branches complete and preserve their registry identities."""
     full_rust = tmp_path / "full.rs"
+    full_python = tmp_path / "full.py"
     full_pyi = tmp_path / "full.pyi"
     projected_rust = tmp_path / "projected.rs"
+    projected_python = tmp_path / "projected.py"
     projected_pyi = tmp_path / "projected.pyi"
     reordered_rust = tmp_path / "reordered.rs"
+    reordered_python = tmp_path / "reordered.py"
     reordered_pyi = tmp_path / "reordered.pyi"
 
     generate_validated_data_models(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         full_rust,
+        full_python,
         full_pyi,
         "SchemaGenerationFixture",
         "SchemaGenerationFixture",
@@ -63,6 +76,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         projected_rust,
+        projected_python,
         projected_pyi,
         "SchemaGenerationFixture",
         "SchemaGenerationFixture",
@@ -72,6 +86,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         reordered_rust,
+        reordered_python,
         reordered_pyi,
         "SchemaGenerationFixture",
         "SchemaGenerationFixture",
@@ -88,6 +103,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     assert "def authentication(" not in projected_pyi_source
     assert projected_source != full_source
     assert projected_source == reordered_rust.read_text(encoding="UTF-8")
+    assert projected_python.read_bytes() == reordered_python.read_bytes()
     assert projected_pyi_source == reordered_pyi.read_text(encoding="UTF-8")
 
     full_accounting = next(line for line in full_source.splitlines() if 'relation: FieldRelation::Key("accounting")' in line)
@@ -106,6 +122,7 @@ def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path)
             ARTIFACTS / "schemas.json",
             "schema_generation_fixture",
             tmp_path / "models.rs",
+            tmp_path / "models.py",
             tmp_path / "models.pyi",
             "SchemaGenerationFixture",
             "SchemaGenerationFixture",
@@ -136,9 +153,10 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
         encoding="UTF-8",
     )
     rust = tmp_path / "models.rs"
+    python = tmp_path / "models.py"
     pyi = tmp_path / "models.pyi"
 
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    generate_validated_data_models(source, "fixture", rust, python, pyi, "Fixture", "Fixture")
 
     rust_source = rust.read_text(encoding="UTF-8")
     pyi_source = pyi.read_text(encoding="UTF-8")
@@ -159,12 +177,14 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
 def test_generate_validated_data_models_uses_language_specific_root_names(tmp_path: Path) -> None:
     """Honor the naming convention selected independently for each generated language."""
     rust = tmp_path / "models.rs"
+    python = tmp_path / "models.py"
     pyi = tmp_path / "models.pyi"
 
     generate_validated_data_models(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         rust,
+        python,
         pyi,
         "AvdDesign",
         "AVDDesign",
@@ -177,3 +197,38 @@ def test_generate_validated_data_models_uses_language_specific_root_names(tmp_pa
     assert "pub struct AvdDesign<'a>" in rust_source
     assert "class AVDDesign:" in pyi_source
     assert "class AvdDesign:" not in pyi_source
+
+
+def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_path: Path) -> None:
+    """Keep released-schema tombstones out of the nominal generated API."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps(
+            {
+                "fixture": {
+                    "type": "dict",
+                    "keys": {
+                        "historic_values": {
+                            "type": "list",
+                            "primary_key": "name",
+                            "deprecation": {"warning": False, "removed": True},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    rust = tmp_path / "models.rs"
+    python = tmp_path / "models.py"
+    pyi = tmp_path / "models.pyi"
+
+    generate_validated_data_models(source, "fixture", rust, python, pyi, "Fixture", "Fixture")
+
+    rust_source = rust.read_text(encoding="UTF-8")
+    python_source = python.read_text(encoding="UTF-8")
+    pyi_source = pyi.read_text(encoding="UTF-8")
+    assert "PrimaryKeyDescriptor { model:" not in rust_source
+    assert "historic_values" not in rust_source
+    assert "historic_values" not in python_source
+    assert "historic_values" not in pyi_source

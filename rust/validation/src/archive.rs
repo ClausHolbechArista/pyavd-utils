@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -35,7 +36,7 @@ use crate::ValidationResult;
 use crate::feedback::InputDiagnostic;
 
 const MAGIC: &[u8; 8] = b"AVDDATA\0";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const HEADER_LENGTH: usize = 16;
 /// Validation semantics used by typed validated-data archives.
 ///
@@ -72,6 +73,17 @@ pub struct FieldDescriptor {
     /// Nominal child model for collection values.
     pub target_model: Option<u32>,
 }
+/// Ordered field slots forming the primary key for one indexed-list model.
+///
+/// Current schemas emit one component. The slice keeps archive and generated-code contracts ready
+/// for composite keys without exposing a single-field assumption.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrimaryKeyDescriptor {
+    /// Indexed-list model containing the items.
+    pub model: u32,
+    /// Ordered field slots on each item model.
+    pub field_slots: &'static [u32],
+}
 /// Static generated registry paired with an archive.
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRegistry {
@@ -81,6 +93,8 @@ pub struct ModelRegistry {
     pub hash: [u8; 32],
     /// Field and item relationships.
     pub fields: &'static [FieldDescriptor],
+    /// Indexed-list primary-key definitions.
+    pub primary_keys: &'static [PrimaryKeyDescriptor],
 }
 
 impl ModelRegistry {
@@ -96,6 +110,13 @@ impl ModelRegistry {
             .iter()
             .copied()
             .find(|field| field.parent_model == parent && field.relation == FieldRelation::Item)
+    }
+
+    fn primary_key(self, model: u32) -> Option<PrimaryKeyDescriptor> {
+        self.primary_keys
+            .iter()
+            .copied()
+            .find(|descriptor| descriptor.model == model)
     }
 }
 
@@ -176,8 +197,18 @@ enum ValueNode {
     I64(i64),
     U64(u64),
     String(StringId),
-    List { start: u32, len: u32, model: u32 },
-    Dict { start: u32, len: u32, model: u32 },
+    List {
+        start: u32,
+        len: u32,
+        model: u32,
+        primary_key_start: u32,
+        primary_key_len: u32,
+    },
+    Dict {
+        start: u32,
+        len: u32,
+        model: u32,
+    },
 }
 
 #[derive(Archive, Serialize, Deserialize, Clone, Debug)]
@@ -195,6 +226,24 @@ struct SequenceSlot {
     value: ValueId,
 }
 
+/// One scalar component of an indexed-list primary key.
+#[derive(Archive, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+enum PrimaryKeyPart {
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    String(StringId),
+}
+
+#[derive(Archive, Serialize, Deserialize, Clone, Debug)]
+#[rkyv(derive(Debug))]
+struct PrimaryKeySlot {
+    parts_start: u32,
+    parts_len: u32,
+    value: ValueId,
+}
+
 #[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 #[rkyv(derive(Debug))]
 struct ValidatedArchive {
@@ -205,6 +254,8 @@ struct ValidatedArchive {
     values: Vec<ValueNode>,
     map_slots: Vec<MapSlot>,
     sequence_slots: Vec<SequenceSlot>,
+    primary_key_parts: Vec<PrimaryKeyPart>,
+    primary_key_slots: Vec<PrimaryKeySlot>,
     strings: Vec<String>,
 }
 
@@ -213,6 +264,8 @@ struct Builder {
     values: Vec<ValueNode>,
     map_slots: Vec<MapSlot>,
     sequence_slots: Vec<SequenceSlot>,
+    primary_key_parts: Vec<PrimaryKeyPart>,
+    primary_key_slots: Vec<PrimaryKeySlot>,
     strings: Vec<String>,
     string_ids: HashMap<String, StringId>,
 }
@@ -224,6 +277,8 @@ impl Builder {
             values: Vec::new(),
             map_slots: Vec::new(),
             sequence_slots: Vec::new(),
+            primary_key_parts: Vec::new(),
+            primary_key_slots: Vec::new(),
             strings: Vec::new(),
             string_ids: HashMap::new(),
         }
@@ -243,6 +298,8 @@ impl Builder {
             values: self.values,
             map_slots: self.map_slots,
             sequence_slots: self.sequence_slots,
+            primary_key_parts: self.primary_key_parts,
+            primary_key_slots: self.primary_key_slots,
             strings: self.strings,
         })
     }
@@ -272,7 +329,9 @@ impl Builder {
             Value::Array(items) => {
                 let parent = model.unwrap_or(u32::MAX);
                 let descriptor = self.registry.item(parent);
+                let primary_key = self.registry.primary_key(parent);
                 let mut slots = Vec::with_capacity(items.len());
+                let mut primary_keys = Vec::with_capacity(items.len());
                 for item in items {
                     let child =
                         self.push_value(item, descriptor.and_then(|field| field.target_model))?;
@@ -280,13 +339,36 @@ impl Builder {
                         field_slot: descriptor.map(|field| field.id),
                         value: child,
                     });
+                    if let Some(primary_key) = primary_key {
+                        primary_keys.push((
+                            self.primary_key_parts(child, primary_key.field_slots)?,
+                            child,
+                        ));
+                    }
                 }
                 let start = to_u32(self.sequence_slots.len(), "sequence slot")?;
                 self.sequence_slots.extend(slots);
+                let primary_key_start = to_u32(self.primary_key_slots.len(), "primary key slot")?;
+                for (key_parts, item_value) in primary_keys {
+                    let parts_start = to_u32(self.primary_key_parts.len(), "primary key part")?;
+                    let parts_len = to_u32(key_parts.len(), "primary key part count")?;
+                    self.primary_key_parts.extend(key_parts);
+                    self.primary_key_slots.push(PrimaryKeySlot {
+                        parts_start,
+                        parts_len,
+                        value: item_value,
+                    });
+                }
                 ValueNode::List {
                     start,
                     len: to_u32(items.len(), "sequence length")?,
                     model: parent,
+                    primary_key_start,
+                    primary_key_len: to_u32(self.primary_key_slots.len(), "primary key slot")?
+                        .checked_sub(primary_key_start)
+                        .ok_or_else(|| {
+                            ArchiveError::Build("invalid primary key slot range".to_owned())
+                        })?,
                 }
             }
             Value::Object(items) => {
@@ -319,6 +401,66 @@ impl Builder {
         })?;
         *target = node;
         Ok(id)
+    }
+
+    fn primary_key_parts(
+        &self,
+        value: ValueId,
+        field_slots: &[u32],
+    ) -> Result<Vec<PrimaryKeyPart>, ArchiveError> {
+        let value_index = usize::try_from(value.0).map_err(|error| {
+            ArchiveError::Build(format!("invalid indexed-list item id: {error}"))
+        })?;
+        let ValueNode::Dict { start, len, .. } = self.values.get(value_index).ok_or_else(|| {
+            ArchiveError::Build(format!("indexed-list item {value_index} is missing"))
+        })?
+        else {
+            return Err(ArchiveError::Build(
+                "indexed-list item is not a dictionary".to_owned(),
+            ));
+        };
+        let start = usize::try_from(*start).map_err(|error| {
+            ArchiveError::Build(format!("invalid indexed-list item start: {error}"))
+        })?;
+        let len = usize::try_from(*len).map_err(|error| {
+            ArchiveError::Build(format!("invalid indexed-list item length: {error}"))
+        })?;
+        let slots = self
+            .map_slots
+            .get(
+                start..start.checked_add(len).ok_or_else(|| {
+                    ArchiveError::Build("indexed-list item range overflows".to_owned())
+                })?,
+            )
+            .ok_or_else(|| ArchiveError::Build("indexed-list item range is invalid".to_owned()))?;
+        field_slots
+            .iter()
+            .map(|field_slot| {
+                let slot = slots
+                    .iter()
+                    .find(|slot| slot.field_slot == Some(*field_slot))
+                    .ok_or_else(|| {
+                        ArchiveError::Build(format!(
+                            "indexed-list item is missing primary-key field slot {field_slot}"
+                        ))
+                    })?;
+                let index = usize::try_from(slot.value.0).map_err(|error| {
+                    ArchiveError::Build(format!("invalid primary-key value id: {error}"))
+                })?;
+                match self.values.get(index) {
+                    Some(ValueNode::Bool(node_value)) => Ok(PrimaryKeyPart::Bool(*node_value)),
+                    Some(ValueNode::I64(node_value)) => Ok(PrimaryKeyPart::I64(*node_value)),
+                    Some(ValueNode::U64(node_value)) => Ok(PrimaryKeyPart::U64(*node_value)),
+                    Some(ValueNode::String(node_value)) => Ok(PrimaryKeyPart::String(*node_value)),
+                    Some(_) => Err(ArchiveError::Build(format!(
+                        "primary-key field slot {field_slot} is not a scalar"
+                    ))),
+                    None => Err(ArchiveError::Build(format!(
+                        "primary-key field slot {field_slot} references a missing value"
+                    ))),
+                }
+            })
+            .collect()
     }
 
     fn intern(&mut self, value: &str) -> Result<StringId, ArchiveError> {
@@ -395,6 +537,15 @@ impl DataStore {
         self.value(self.archived().root)
     }
 
+    /// Return an owned root handle suitable for objects that must outlive a Rust borrow, such as
+    /// Python view wrappers.
+    pub fn root_handle(self: &Arc<Self>) -> ValueHandle {
+        ValueHandle {
+            store: Arc::clone(self),
+            id: self.archived().root.0.to_native(),
+        }
+    }
+
     fn archived(&self) -> &ArchivedValidatedArchive {
         self.archive.borrow_dependent().0
     }
@@ -404,6 +555,54 @@ impl DataStore {
             store: self,
             id: id.0.to_native(),
         }
+    }
+}
+
+/// Owned handle to one immutable archived value.
+///
+/// Cloning a handle retains the memory-mapped store; it does not materialize the value.
+#[derive(Clone, Debug)]
+pub struct ValueHandle {
+    store: Arc<DataStore>,
+    id: u32,
+}
+
+impl ValueHandle {
+    fn view(&self) -> ValueView<'_> {
+        ValueView {
+            store: &self.store,
+            id: self.id,
+        }
+    }
+
+    /// Return a dictionary handle when this value is a dictionary.
+    pub fn as_dict(&self) -> Option<DictHandle> {
+        self.view().as_dict().map(|_| DictHandle(self.clone()))
+    }
+
+    /// Return a list handle when this value is a list.
+    pub fn as_list(&self) -> Option<ListHandle> {
+        self.view().as_list().map(|_| ListHandle(self.clone()))
+    }
+
+    /// Borrow a string scalar.
+    pub fn as_str(&self) -> Option<&str> {
+        self.view().as_str()
+    }
+
+    /// Read an integer scalar.
+    pub fn as_i64(&self) -> Option<i64> {
+        self.view().as_i64()
+    }
+
+    /// Read a boolean scalar.
+    pub fn as_bool(&self) -> Option<bool> {
+        self.view().as_bool()
+    }
+
+    /// Return whether the value is explicit null.
+    pub fn is_null(&self) -> bool {
+        self.view().is_null()
     }
 }
 
@@ -511,6 +710,40 @@ impl<'a> DictView<'a> {
     }
 }
 
+/// Owned dictionary handle retaining its memory-mapped store.
+#[derive(Clone, Debug)]
+pub struct DictHandle(ValueHandle);
+
+impl DictHandle {
+    /// Look up a statically generated field slot.
+    pub fn field(&self, slot: u32) -> Option<ValueHandle> {
+        self.0
+            .view()
+            .as_dict()?
+            .field(slot)
+            .map(|value| ValueHandle {
+                store: Arc::clone(&self.0.store),
+                id: value.id,
+            })
+    }
+
+    /// Look up a concrete dictionary key.
+    pub fn key(&self, key: &str) -> Option<ValueHandle> {
+        self.0.view().as_dict()?.key(key).map(|value| ValueHandle {
+            store: Arc::clone(&self.0.store),
+            id: value.id,
+        })
+    }
+}
+
+/// One borrowed scalar component used for indexed-list lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimaryKeyValue<'a> {
+    Bool(bool),
+    Int(i64),
+    Str(&'a str),
+}
+
 /// Borrowed sequence view.
 #[derive(Clone, Copy, Debug)]
 pub struct ListView<'a>(ValueView<'a>);
@@ -523,6 +756,21 @@ impl<'a> ListView<'a> {
         (
             usize::try_from(start.to_native()).unwrap_or(0),
             usize::try_from(len.to_native()).unwrap_or(0),
+        )
+    }
+
+    fn primary_key_range(self) -> (usize, usize) {
+        let ArchivedValueNode::List {
+            primary_key_start,
+            primary_key_len,
+            ..
+        } = self.0.node()
+        else {
+            return (0, 0);
+        };
+        (
+            usize::try_from(primary_key_start.to_native()).unwrap_or(0),
+            usize::try_from(primary_key_len.to_native()).unwrap_or(0),
         )
     }
     /// Number of archived items.
@@ -540,6 +788,106 @@ impl<'a> ListView<'a> {
             .then(|| self.0.store.archived().sequence_slots.get(start + index))
             .flatten()
             .map(|entry| self.0.store.value(entry.value))
+    }
+
+    /// Look up an indexed-list item by its ordered primary-key components.
+    pub fn get_by_primary_key(self, key: &[PrimaryKeyValue<'_>]) -> Option<ValueView<'a>> {
+        let (start, len) = self.primary_key_range();
+        self.0
+            .store
+            .archived()
+            .primary_key_slots
+            .get(start..start.checked_add(len)?)?
+            .iter()
+            .find_map(|entry| {
+                self.primary_key_matches(entry, key)
+                    .then(|| self.0.store.value(entry.value))
+            })
+    }
+
+    fn primary_key_matches(
+        self,
+        entry: &ArchivedPrimaryKeySlot,
+        key: &[PrimaryKeyValue<'_>],
+    ) -> bool {
+        let Ok(start) = usize::try_from(entry.parts_start.to_native()) else {
+            return false;
+        };
+        let Ok(len) = usize::try_from(entry.parts_len.to_native()) else {
+            return false;
+        };
+        let Some(parts) = start
+            .checked_add(len)
+            .and_then(|end| self.0.store.archived().primary_key_parts.get(start..end))
+        else {
+            return false;
+        };
+        parts.len() == key.len()
+            && parts.iter().zip(key).all(|(stored_part, requested_part)| {
+                match (stored_part, requested_part) {
+                    (ArchivedPrimaryKeyPart::Bool(stored), PrimaryKeyValue::Bool(requested)) => {
+                        stored == requested
+                    }
+                    (ArchivedPrimaryKeyPart::I64(stored), PrimaryKeyValue::Int(requested)) => {
+                        stored.to_native() == *requested
+                    }
+                    (ArchivedPrimaryKeyPart::U64(stored), PrimaryKeyValue::Int(requested)) => {
+                        u64::try_from(*requested)
+                            .is_ok_and(|converted| stored.to_native() == converted)
+                    }
+                    (
+                        ArchivedPrimaryKeyPart::String(stored_id),
+                        PrimaryKeyValue::Str(requested),
+                    ) => self
+                        .0
+                        .store
+                        .archived()
+                        .strings
+                        .get(usize::try_from(stored_id.0.to_native()).unwrap_or(usize::MAX))
+                        .is_some_and(|stored| stored.as_ref() == *requested),
+                    _ => false,
+                }
+            })
+    }
+}
+
+/// Owned list handle retaining its memory-mapped store.
+#[derive(Clone, Debug)]
+pub struct ListHandle(ValueHandle);
+
+impl ListHandle {
+    /// Number of archived items.
+    pub fn len(&self) -> usize {
+        self.0.view().as_list().map_or(0, ListView::len)
+    }
+
+    /// Return whether the list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Return one item by position.
+    pub fn get(&self, index: usize) -> Option<ValueHandle> {
+        self.0
+            .view()
+            .as_list()?
+            .get(index)
+            .map(|value| ValueHandle {
+                store: Arc::clone(&self.0.store),
+                id: value.id,
+            })
+    }
+
+    /// Look up an indexed-list item by its ordered primary-key components.
+    pub fn get_by_primary_key(&self, key: &[PrimaryKeyValue<'_>]) -> Option<ValueHandle> {
+        self.0
+            .view()
+            .as_list()?
+            .get_by_primary_key(key)
+            .map(|value| ValueHandle {
+                store: Arc::clone(&self.0.store),
+                id: value.id,
+            })
     }
 }
 
@@ -584,11 +932,23 @@ fn validate_integrity(root: &ArchivedValidatedArchive) -> Result<(), ArchiveErro
             ArchivedValueNode::String(id) => {
                 usize::try_from(id.0.to_native()).is_ok_and(|id| id < root.strings.len())
             }
-            ArchivedValueNode::List { start, len, .. } => range_fits(
-                start.to_native(),
-                len.to_native(),
-                root.sequence_slots.len(),
-            ),
+            ArchivedValueNode::List {
+                start,
+                len,
+                primary_key_start,
+                primary_key_len,
+                ..
+            } => {
+                range_fits(
+                    start.to_native(),
+                    len.to_native(),
+                    root.sequence_slots.len(),
+                ) && range_fits(
+                    primary_key_start.to_native(),
+                    primary_key_len.to_native(),
+                    root.primary_key_slots.len(),
+                )
+            }
             ArchivedValueNode::Dict { start, len, .. } => {
                 range_fits(start.to_native(), len.to_native(), root.map_slots.len())
             }
@@ -616,6 +976,28 @@ fn validate_integrity(root: &ArchivedValidatedArchive) -> Result<(), ArchiveErro
         if usize::try_from(slot.value.0.to_native()).map_or(true, |id| id >= values) {
             return Err(ArchiveError::Invalid(
                 "sequence slot contains an invalid value id".to_owned(),
+            ));
+        }
+    }
+    for slot in root.primary_key_slots.iter() {
+        if usize::try_from(slot.value.0.to_native()).map_or(true, |id| id >= values)
+            || !range_fits(
+                slot.parts_start.to_native(),
+                slot.parts_len.to_native(),
+                root.primary_key_parts.len(),
+            )
+        {
+            return Err(ArchiveError::Invalid(
+                "primary key slot contains an invalid id or range".to_owned(),
+            ));
+        }
+    }
+    for part in root.primary_key_parts.iter() {
+        if let ArchivedPrimaryKeyPart::String(id) = part
+            && usize::try_from(id.0.to_native()).map_or(true, |id| id >= root.strings.len())
+        {
+            return Err(ArchiveError::Invalid(
+                "primary key part contains an invalid string id".to_owned(),
             ));
         }
     }
@@ -739,15 +1121,27 @@ mod tests {
             relation: FieldRelation::Key("enabled"),
             target_model: None,
         },
+        FieldDescriptor {
+            id: 4,
+            parent_model: 2,
+            relation: FieldRelation::Key("name"),
+            target_model: None,
+        },
     ];
+    const PRIMARY_KEY_FIELDS: &[u32] = &[4];
+    const PRIMARY_KEYS: &[PrimaryKeyDescriptor] = &[PrimaryKeyDescriptor {
+        model: 1,
+        field_slots: PRIMARY_KEY_FIELDS,
+    }];
     const REGISTRY: ModelRegistry = ModelRegistry {
         root_model: 0,
         hash: [7; 32],
         fields: FIELDS,
+        primary_keys: PRIMARY_KEYS,
     };
 
     fn schemas() -> Store {
-        let source = StoreSource::from_json(r#"{"root":{"type":"dict","keys":{"name":{"type":"str"},"items":{"type":"list","items":{"type":"dict","keys":{"enabled":{"type":"bool"}}}}}}}"#).expect("valid source");
+        let source = StoreSource::from_json(r#"{"root":{"type":"dict","keys":{"name":{"type":"str"},"items":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"name":{"type":"str"},"enabled":{"type":"bool"}}}}}}}"#).expect("valid source");
         Store::compile(&source).expect("valid store")
     }
 
@@ -759,18 +1153,28 @@ mod tests {
         let result = validate_json_to_archive(
             &schemas,
             "root",
-            r#"{"name":"leaf1","items":[{"enabled":true}]}"#,
+            r#"{"name":"leaf1","items":[{"name":"Ethernet1","enabled":true}]}"#,
             &destination,
             REGISTRY,
         )
         .expect("publication");
         assert!(result.published);
-        let data = DataStore::from_file(&destination, schemas.archive_hash(), REGISTRY.hash)
-            .expect("compatible archive");
+        let data = Arc::new(
+            DataStore::from_file(&destination, schemas.archive_hash(), REGISTRY.hash)
+                .expect("compatible archive"),
+        );
         let root = data.root().as_dict().expect("dictionary root");
         assert_eq!(root.field(0).and_then(ValueView::as_str), Some("leaf1"));
         let items = root.field(1).and_then(ValueView::as_list).expect("items");
         assert_eq!(items.len(), 1);
+        let indexed_item = items
+            .get_by_primary_key(&[PrimaryKeyValue::Str("Ethernet1")])
+            .and_then(ValueView::as_dict)
+            .expect("indexed item");
+        assert_eq!(
+            indexed_item.field(4).and_then(ValueView::as_str),
+            Some("Ethernet1")
+        );
         assert_eq!(
             items
                 .get(0)
@@ -778,6 +1182,22 @@ mod tests {
                 .and_then(|item| item.field(3))
                 .and_then(ValueView::as_bool),
             Some(true)
+        );
+        let root_handle = data.root_handle().as_dict().expect("owned dictionary root");
+        drop(data);
+        let indexed_handle = root_handle
+            .field(1)
+            .and_then(|value| value.as_list())
+            .and_then(|list_handle| {
+                list_handle.get_by_primary_key(&[PrimaryKeyValue::Str("Ethernet1")])
+            })
+            .and_then(|value| value.as_dict())
+            .expect("owned indexed item");
+        assert_eq!(
+            indexed_handle
+                .field(4)
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            Some("Ethernet1".to_owned())
         );
     }
 
@@ -807,6 +1227,8 @@ mod tests {
             values: vec![ValueNode::String(StringId(0))],
             map_slots: Vec::new(),
             sequence_slots: Vec::new(),
+            primary_key_parts: Vec::new(),
+            primary_key_slots: Vec::new(),
             strings: Vec::new(),
         };
         let archived = rkyv::to_bytes::<RkyvError>(&archive).expect("serializable archive");
