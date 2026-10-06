@@ -81,7 +81,8 @@ def generate_validated_data_models(
     schema_name: str,
     rust_destination: Path,
     pyi_destination: Path,
-    root_name: str,
+    rust_root_name: str,
+    python_root_name: str,
     root_keys: list[str] | None = None,
 ) -> None:
     """
@@ -92,7 +93,8 @@ def generate_validated_data_models(
         schema_name: Name of the schema root to generate from.
         rust_destination: Destination for the Rust model registry and views.
         pyi_destination: Destination for the corresponding Python declarations.
-        root_name: Public name of the root model.
+        rust_root_name: Public Rust name of the root model, using Rust naming conventions.
+        python_root_name: Public Python name of the root model, using Python naming conventions.
         root_keys: Optional static root keys to expose. Descendants of selected keys
             remain complete, while unselected root branches are omitted from the
             generated API. The runtime validated-data archive remains complete.
@@ -102,8 +104,8 @@ def generate_validated_data_models(
         registry = _project_registry(registry, root_keys)
     models = list(registry["models"])
     fields = list(registry["fields"])
-    names = _model_names(models, root_name)
-    rust_destination.write_text(_render_rust(registry, models, fields, root_name), encoding="UTF-8")
+    names = _model_names(models, python_root_name)
+    rust_destination.write_text(_render_rust(registry, models, fields, rust_root_name), encoding="UTF-8")
     pyi_destination.write_text(_render_pyi(models, fields, names), encoding="UTF-8")
 
 
