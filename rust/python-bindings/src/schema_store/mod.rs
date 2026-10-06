@@ -78,8 +78,8 @@ pub(crate) mod _schema_store {
     #[pyfunction]
     /// Return minimal schema metadata at the given data path.
     ///
-    /// Dynamic keys in the AVD design schema are not supported today; only
-    /// static schema paths can be inspected.
+    /// General data-aware dynamic-key resolution is not supported. Lookup retains
+    /// the existing empty-input behavior and its schema-default resolution rules.
     pub(crate) fn get_schema_info(
         schema_name: &str,
         data_path: Vec<String>,

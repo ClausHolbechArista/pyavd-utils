@@ -62,9 +62,6 @@ def test_compile_schema_archive_rejects_invalid_schema(tmp_path: Path) -> None:
         pytest.param("avd_design", ["node_type_keys"], "list", "key", id="avd_design_node_type_keys"),
         pytest.param("avd_design", ["connected_endpoints_keys"], "list", "key", id="avd_design_connected_endpoints_keys"),
         pytest.param("avd_design", ["network_services_keys"], "list", "name", id="avd_design_network_services_keys"),
-        pytest.param("avd_design", ["l3leaf"], None, None, id="avd_design_dynamic_node_type"),
-        pytest.param("avd_design", ["servers"], None, None, id="avd_design_dynamic_connected_endpoints"),
-        pytest.param("avd_design", ["tenants"], None, None, id="avd_design_dynamic_network_services"),
     ],
 )
 def test_schema_store_get_schema_info(

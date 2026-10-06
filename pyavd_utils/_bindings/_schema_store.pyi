@@ -22,8 +22,11 @@ def get_schema_info(schema_name: Literal["eos_config", "avd_design"], data_path:
     Return minimal metadata for the schema at the given data path, or None if unresolved.
 
     Limitation:
-        Dynamic keys in the AVD design schema are not supported today; only static schema paths
-        can be inspected. The supported schema names are "eos_config" and "avd_design".
+        General data-aware dynamic-key resolution is not supported. For "avd_design", the
+        existing empty-list inputs for node_type_keys, connected_endpoints_keys, and
+        network_services_keys suppress their corresponding defaults. Other schema-default
+        resolution follows the existing traversal rules.
+        The supported schema names are "eos_config" and "avd_design".
 
     Args:
         schema_name: The name of the schema to inspect.
