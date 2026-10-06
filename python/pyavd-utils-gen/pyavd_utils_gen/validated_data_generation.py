@@ -80,6 +80,7 @@ def generate_validated_data_models(
     source: Path,
     schema_name: str,
     rust_destination: Path,
+    python_destination: Path,
     pyi_destination: Path,
     rust_root_name: str,
     python_root_name: str,
@@ -92,6 +93,7 @@ def generate_validated_data_models(
         source: Combined source schema containing ``schema_name``.
         schema_name: Name of the schema root to generate from.
         rust_destination: Destination for the Rust model registry and views.
+        python_destination: Destination for the Python runtime view classes.
         pyi_destination: Destination for the corresponding Python declarations.
         rust_root_name: Public Rust name of the root model, using Rust naming conventions.
         python_root_name: Public Python name of the root model, using Python naming conventions.
@@ -106,7 +108,8 @@ def generate_validated_data_models(
     fields = list(registry["fields"])
     names = _model_names(models, python_root_name)
     rust_destination.write_text(_render_rust(registry, models, fields, rust_root_name), encoding="UTF-8")
-    pyi_destination.write_text(_render_pyi(models, fields, names), encoding="UTF-8")
+    python_destination.write_text(_render_python(models, fields, names, rust_root_name), encoding="UTF-8")
+    pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name), encoding="UTF-8")
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
@@ -226,6 +229,42 @@ def _python_scalar_type(target: int | str) -> str:
         raise ValueError(msg) from error
 
 
+def _primary_key_fields(
+    model: dict[str, Any],
+    models: dict[int, dict[str, Any]],
+    by_parent: dict[int, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Resolve the ordered scalar field slots forming one indexed-list primary key."""
+    primary_key_names = [str(name) for name in model.get("primary_key_fields", [])]
+    if not primary_key_names:
+        return []
+    model_id = int(model["id"])
+    item = next((field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Item"), None)
+    if item is None:
+        msg = f"indexed-list model {model_id} has no item relationship"
+        raise ValueError(msg)
+    target_kind, target = _target(item)
+    if target_kind != "Model" or models.get(int(target), {}).get("kind") != "Dict":
+        msg = f"indexed-list model {model_id} does not contain dictionary items"
+        raise ValueError(msg)
+    item_fields = {
+        relation_value: field
+        for field in by_parent.get(int(target), [])
+        if (relation_kind := _relation(field))[0] == "Key" and (relation_value := relation_kind[1]) is not None
+    }
+    resolved = []
+    for name in primary_key_names:
+        field = item_fields.get(name)
+        if field is None:
+            msg = f"indexed-list model {model_id} primary-key field {name!r} is missing"
+            raise ValueError(msg)
+        if _target(field)[0] != "Scalar":
+            msg = f"indexed-list model {model_id} primary-key field {name!r} is not scalar"
+            raise ValueError(msg)
+        resolved.append(field)
+    return resolved
+
+
 def _render_rust(
     registry: dict[str, Any],
     models: list[dict[str, Any]],
@@ -236,13 +275,18 @@ def _render_rust(
     if root_module == "__pyavd_generated_registry":
         msg = f"root name {root_name!r} conflicts with the generated registry namespace"
         raise ValueError(msg)
+    models_by_id = {int(model["id"]): model for model in models}
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for field in fields:
+        by_parent.setdefault(int(field["parent"]), []).append(field)
+    primary_keys = [(int(model["id"]), primary_key_fields) for model in models if (primary_key_fields := _primary_key_fields(model, models_by_id, by_parent))]
     output = [
         "// Copyright (c) 2026 Arista Networks, Inc.\n",
         "// Generated from the AVD schema. Do not edit by hand.\n\n",
         f"const REGISTRY_HASH: [u8; 32] = [{', '.join(str(value) for value in registry['registry_hash'])}];\n",
         "mod __pyavd_generated_registry {\n",
         "    use super::REGISTRY_HASH;\n",
-        "    use ::validation::archive::{FieldDescriptor, FieldRelation, ModelRegistry};\n\n",
+        "    use ::validation::archive::{FieldDescriptor, FieldRelation, ModelRegistry, PrimaryKeyDescriptor};\n\n",
     ]
     output.append("    static FIELDS: &[FieldDescriptor] = &[\n")
     for field in fields:
@@ -254,13 +298,19 @@ def _render_rust(
             f"        FieldDescriptor {{ id: {field['id']}, parent_model: {field['parent']}, relation: {relation}, target_model: {target_model} }},\n"
         )
     output.append("    ];\n")
-    output.append(f"    pub const REGISTRY: ModelRegistry = ModelRegistry {{ root_model: {registry['root']}, hash: REGISTRY_HASH, fields: FIELDS }};\n")
+    for model_id, primary_key_fields in primary_keys:
+        slots = ", ".join(str(field["id"]) for field in primary_key_fields)
+        output.append(f"    static PRIMARY_KEY_FIELDS_{model_id}: &[u32] = &[{slots}];\n")
+    output.append("    static PRIMARY_KEYS: &[PrimaryKeyDescriptor] = &[\n")
+    for model_id, _ in primary_keys:
+        output.append(f"        PrimaryKeyDescriptor {{ model: {model_id}, field_slots: PRIMARY_KEY_FIELDS_{model_id} }},\n")
+    output.append("    ];\n")
+    output.append(
+        f"    pub const REGISTRY: ModelRegistry = ModelRegistry {{ root_model: {registry['root']}, "
+        "hash: REGISTRY_HASH, fields: FIELDS, primary_keys: PRIMARY_KEYS };\n"
+    )
     output.append("}\n")
     output.append("pub use __pyavd_generated_registry::REGISTRY;\n\n")
-    models_by_id = {int(model["id"]): model for model in models}
-    by_parent: dict[int, list[dict[str, Any]]] = {}
-    for field in fields:
-        by_parent.setdefault(int(field["parent"]), []).append(field)
     visited: set[int] = set()
     output.append(f"pub mod {root_module} {{\n")
     output.extend(
@@ -327,9 +377,18 @@ def _render_rust_model(
         item = next((field for field in fields if _relation(field)[0] == "Item"), None)
         output.append(f"{indent}    pub fn len(self) -> usize {{ self.0.len() }}\n")
         output.append(f"{indent}    pub fn is_empty(self) -> bool {{ self.0.is_empty() }}\n")
-        if item is not None:
+        if item is None:
+            output.append(
+                f"{indent}    pub fn get(self, index: usize) -> ::core::option::Option<::validation::archive::ValueView<'a>> {{ self.0.get(index) }}\n"
+            )
+        else:
             return_type, conversion = _rust_target(item, models, child_names, namespace_name)
             output.append(f"{indent}    pub fn get(self, index: usize) -> ::core::option::Option<{return_type}> {{ self.0.get(index){conversion} }}\n")
+            if _primary_key_fields(model, models, by_parent):
+                output.append(
+                    f"{indent}    pub fn get_by_primary_key(self, key: &[::validation::archive::PrimaryKeyValue<'_>]) "
+                    f"-> ::core::option::Option<{return_type}> {{ self.0.get_by_primary_key(key){conversion} }}\n"
+                )
     output.append(f"{indent}}}\n")
 
     model_fields = [field for field in fields if _target(field)[0] == "Model"]
@@ -413,50 +472,235 @@ def _rust_target(
     return (f"{qualified}<'a>", f".and_then({qualified}::from_value)")
 
 
+def _python_target_type(field: dict[str, Any], names: dict[int, str]) -> str:
+    target_kind, target = _target(field)
+    return names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
+
+
+def _python_field_type(field: dict[str, Any], names: dict[int, str], primary_key_field_ids: frozenset[int]) -> str:
+    parts = [_python_target_type(field, names)]
+    if int(field["id"]) in primary_key_field_ids:
+        return parts[0]
+    if not bool(field["required"]) and not bool(field["has_default"]):
+        parts.append("UndefinedType")
+    parts.append("None")
+    return " | ".join(parts)
+
+
+def _python_model_wrap(field: dict[str, Any], names: dict[int, str], value: str) -> str:
+    target_kind, target = _target(field)
+    if target_kind != "Model":
+        return value
+    target_name = names[int(target)].removesuffix("View")
+    return f"_wrap_model({value}, {target_name})"
+
+
+def _render_python(
+    models: list[dict[str, Any]],
+    fields: list[dict[str, Any]],
+    names: dict[int, str],
+    rust_root_name: str,
+) -> str:
+    """Render Python model identities backed by generic PyO3 archive handles."""
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for field in fields:
+        by_parent.setdefault(int(field["parent"]), []).append(field)
+    models_by_id = {int(model["id"]): model for model in models}
+    primary_key_field_ids = frozenset(int(field["id"]) for model in models for field in _primary_key_fields(model, models_by_id, by_parent))
+    root_name = names[0].removesuffix("View")
+    open_name = f"open_{_rust_module_identifier(rust_root_name)}"
+    output = [
+        "# Copyright (c) 2026 Arista Networks, Inc.\n",
+        "# Generated from the AVD schema. Do not edit by hand.\n",
+        "# ruff: noqa: EM101, TC003, TRY003\n",
+        "from __future__ import annotations\n\n",
+        "from collections.abc import Iterator\n",
+        "from pathlib import Path\n",
+        "from typing import Any\n\n",
+        f"from pyavd._rust import _DictView, _ListView, _ValueHandle, _{open_name}_handle\n",
+        "from pyavd._utils.undefined import Undefined, UndefinedType\n\n",
+        "def _wrap_model(value: Any, model: type[Any]) -> Any:\n",
+        "    return model(value) if isinstance(value, _ValueHandle) else value\n\n",
+    ]
+    for model in models:
+        model_id = int(model["id"])
+        name = names[model_id].removesuffix("View")
+        model_fields = by_parent.get(model_id, [])
+        if model["kind"] == "Dict":
+            output.append(f"class {name}(_DictView):\n")
+            static_fields = [field for field in model_fields if _relation(field)[0] == "Key"]
+            if not static_fields:
+                output.append("    pass\n\n")
+                continue
+            for field in static_fields:
+                key = str(_relation(field)[1])
+                annotation = _python_field_type(field, names, primary_key_field_ids)
+                expression = _python_model_wrap(field, names, f"self._get_field({field['id']})")
+                output.extend(
+                    [
+                        "    @property\n",
+                        f"    def {_identifier(key)}(self) -> {annotation}:\n",
+                        f"        return {expression}\n",
+                    ]
+                )
+            output.append("\n")
+            continue
+
+        item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
+        item_type = _python_target_type(item, names) if item is not None else "Any"
+        item_expression = _python_model_wrap(item, names, "self._get_item(index)") if item is not None else "self._get_item(index)"
+        primary_key_fields = _primary_key_fields(model, models_by_id, by_parent)
+        returned_item_type = item_type if primary_key_fields else f"{item_type} | None"
+        output.append(f"class {name}(_ListView):\n")
+        output.extend(
+            [
+                f"    def __iter__(self) -> Iterator[{returned_item_type}]:\n",
+                "        for index in range(len(self)):\n",
+                "            yield self._item_at(index)\n\n",
+                f"    def _item_at(self, index: int) -> {returned_item_type}:\n",
+            ]
+        )
+        if primary_key_fields:
+            output.extend(
+                [
+                    f"        value = {item_expression}\n",
+                    "        if value is None:\n",
+                    '            raise RuntimeError("indexed-list item is null")\n',
+                    "        return value\n",
+                ]
+            )
+        else:
+            output.append(f"        return {item_expression}\n")
+        if not primary_key_fields:
+            output.extend(
+                [
+                    f"    def __getitem__(self, index: int | slice) -> {item_type} | None | list[{item_type} | None]:\n",
+                    "        if isinstance(index, slice):\n",
+                    "            return [self._item_at(item_index) for item_index in range(*index.indices(len(self)))]\n",
+                    "        return self._item_at(index)\n\n",
+                ]
+            )
+            continue
+        if len(primary_key_fields) != 1:
+            msg = f"composite primary keys are not supported yet for model {model_id}"
+            raise ValueError(msg)
+        primary_key = primary_key_fields[0]
+        primary_key_name = str(_relation(primary_key)[1])
+        primary_key_type = _python_target_type(primary_key, names)
+        if item is None:
+            msg = f"indexed-list model {model_id} has no item relationship"
+            raise ValueError(msg)
+        wrapped_lookup = _python_model_wrap(item, names, "value")
+        output.extend(
+            [
+                f"    def __contains__(self, key: {primary_key_type}) -> bool:\n",
+                "        return self._contains_primary_key((key,))\n\n",
+                f"    def __getitem__(self, key: {primary_key_type}) -> {item_type}:\n",
+                "        value = self._get_by_primary_key((key,))\n",
+                "        if isinstance(value, UndefinedType):\n",
+                "            raise KeyError(key)\n",
+                f"        return {wrapped_lookup}\n\n",
+                f"    def get(self, key: {primary_key_type}, default: Any = Undefined) -> {item_type} | Any:\n",
+                "        value = self._get_by_primary_key((key,))\n",
+                "        if isinstance(value, UndefinedType):\n",
+                "            return default\n",
+                f"        return {wrapped_lookup}\n\n",
+                f"    def keys(self) -> Iterator[{primary_key_type}]:\n",
+                f"        return (item.{_identifier(primary_key_name)} for item in self)\n\n",
+                f"    def values(self) -> Iterator[{item_type}]:\n",
+                "        return iter(self)\n\n",
+                f"    def items(self) -> Iterator[tuple[{primary_key_type}, {item_type}]]:\n",
+                f"        return ((item.{_identifier(primary_key_name)}, item) for item in self)\n\n",
+            ]
+        )
+    output.extend(
+        [
+            f"def {open_name}(archive: Path, schema_archive: Path) -> {root_name}:\n",
+            f"    return {root_name}(_{open_name}_handle(archive, schema_archive))\n",
+        ]
+    )
+    return "".join(output)
+
+
 def _render_pyi(
     models: list[dict[str, Any]],
     fields: list[dict[str, Any]],
     names: dict[int, str],
+    rust_root_name: str,
 ) -> str:
-    header = [
-        "# Copyright (c) 2026 Arista Networks, Inc.\n",
-        "# Generated from the AVD schema. Do not edit by hand.\n",
-        "# ruff: noqa: N802\n",
-        "from collections.abc import Sequence\n\n",
-        "class _Value: ...\n\n",
-    ]
-    definitions: list[tuple[str, bool]] = []
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         by_parent.setdefault(int(field["parent"]), []).append(field)
+    models_by_id = {int(model["id"]): model for model in models}
+    primary_key_field_ids = frozenset(int(field["id"]) for model in models for field in _primary_key_fields(model, models_by_id, by_parent))
+    header = [
+        "# Copyright (c) 2026 Arista Networks, Inc.\n",
+        "# Generated from the AVD schema. Do not edit by hand.\n",
+        "from collections.abc import Iterator, Sequence\n",
+        "from pathlib import Path\n",
+        "from typing import Any, overload\n\n",
+        "from pyavd._utils.undefined import UndefinedType\n\n",
+    ]
+    definitions: list[str] = []
     for model in models:
         model_id = int(model["id"])
         name = names[model_id].removesuffix("View")
-        if model["kind"] == "List":
-            item = next((field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Item"), None)
-            item_type = "_Value"
-            if item is not None:
-                target_kind, target = _target(item)
-                item_type = names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
-            definitions.append((f"class {name}(\n    Sequence[{item_type}],\n): ...", True))
+        model_fields = by_parent.get(model_id, [])
+        if model["kind"] == "Dict":
+            body = [f"class {name}:\n"]
+            static_fields = [field for field in model_fields if _relation(field)[0] == "Key"]
+            if not static_fields:
+                body.append("    ...\n")
+            for field in static_fields:
+                key = str(_relation(field)[1])
+                body.append(f"    @property\n    def {_identifier(key)}(self) -> {_python_field_type(field, names, primary_key_field_ids)}: ...\n")
+            definitions.append("".join(body).rstrip())
             continue
-        static_fields = [field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Key"]
-        if not static_fields:
-            definitions.append((f"class {name}: ...", True))
+        item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
+        base_item_type = _python_target_type(item, names) if item is not None else "Any"
+        primary_key_fields = _primary_key_fields(model, models_by_id, by_parent)
+        item_type = base_item_type if primary_key_fields else f"{base_item_type} | None"
+        body = [f"class {name}(Sequence[{item_type}]):\n", f"    def __iter__(self) -> Iterator[{item_type}]: ...\n"]
+        if not primary_key_fields:
+            body.extend(
+                [
+                    "    @overload\n",
+                    f"    def __getitem__(self, index: int) -> {item_type}: ...\n",
+                    "    @overload\n",
+                    f"    def __getitem__(self, index: slice) -> list[{item_type}]: ...\n",
+                ]
+            )
+            definitions.append("".join(body).rstrip())
             continue
-        body = [f"class {name}:\n"]
-        for field in static_fields:
-            key = _relation(field)[1]
-            target_kind, target = _target(field)
-            annotation = names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
-            body.append(f"    @property\n    def {_identifier(str(key))}(\n        self,\n    ) -> {annotation} | None: ...\n")
-        definitions.append(("".join(body).rstrip(), False))
-    output = ["".join(header)]
-    for index, (definition, is_empty) in enumerate(definitions):
-        if index:
-            output.append("\n" if is_empty and definitions[index - 1][1] else "\n\n")
-        output.append(definition)
-    return "".join(output) + "\n"
+        if len(primary_key_fields) != 1:
+            msg = f"composite primary keys are not supported yet for model {model_id}"
+            raise ValueError(msg)
+        primary_key = primary_key_fields[0]
+        primary_key_type = _python_target_type(primary_key, names)
+        item_without_none = base_item_type
+        body.extend(
+            [
+                f"    def __contains__(self, key: {primary_key_type}) -> bool: ...\n",
+                f"    def __getitem__(self, key: {primary_key_type}) -> {item_without_none}: ...\n",
+                "    @overload\n",
+                f"    def get(self, key: {primary_key_type}) -> {item_without_none} | UndefinedType: ...\n",
+                "    @overload\n",
+                f"    def get(self, key: {primary_key_type}, default: Any) -> {item_without_none} | Any: ...\n",
+                f"    def keys(self) -> Iterator[{primary_key_type}]: ...\n",
+                f"    def values(self) -> Iterator[{item_type}]: ...\n",
+                f"    def items(self) -> Iterator[tuple[{primary_key_type}, {item_without_none}]]: ...\n",
+            ]
+        )
+        definitions.append("".join(body).rstrip())
+    output = ["".join(header), "\n\n".join(definitions)]
+    root_name = names[0].removesuffix("View")
+    output.extend(
+        [
+            "\n\n",
+            f"def open_{_rust_module_identifier(rust_root_name)}(archive: Path, schema_archive: Path) -> {root_name}: ...\n",
+        ]
+    )
+    return "".join(output)
 
 
 __all__ = ["generate_validated_data_models"]

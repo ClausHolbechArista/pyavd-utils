@@ -80,6 +80,7 @@ mod utils;
 mod views;
 
 pub use self::compiled::CompileError;
+pub use self::compiled::PrimaryKeyError;
 pub use self::compiled::SchemaDiagnostic;
 pub use self::compiled::SchemaDiagnostics;
 pub use self::compiled::SchemaId;

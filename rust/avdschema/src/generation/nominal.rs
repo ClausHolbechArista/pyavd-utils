@@ -90,6 +90,11 @@ pub struct NominalModel {
     pub path: Vec<String>,
     /// Compiled structural node represented by this occurrence.
     pub schema_id: SchemaId,
+    /// Ordered primary-key field names for an indexed list.
+    ///
+    /// The current source schema supports one field. Keeping the nominal contract component-based
+    /// avoids making generated consumers depend on that restriction.
+    pub primary_key_fields: Vec<String>,
 }
 /// Build-time nominal model registry for one schema root.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -140,6 +145,16 @@ impl SchemaVisitor for Builder {
         occurrence: &SchemaOccurrence<'_>,
     ) -> Result<TraversalControl, Self::Error> {
         let parent = self.parents.last().copied().flatten();
+        if occurrence.relation() != SchemaRelation::Root
+            && occurrence
+                .common()
+                .deprecation
+                .as_ref()
+                .is_some_and(|deprecation| deprecation.removed)
+        {
+            self.parents.push(parent);
+            return Ok(TraversalControl::SkipChildren);
+        }
         let model = if let Some(kind) = model_kind(occurrence) {
             let id = ModelId(u32::try_from(self.models.len()).map_err(|error| {
                 CompileError::Archive(format!("nominal model count exceeds u32: {error}"))
@@ -149,6 +164,7 @@ impl SchemaVisitor for Builder {
                 kind,
                 path: occurrence.path().to_vec(),
                 schema_id: occurrence.schema_id(),
+                primary_key_fields: primary_key_fields(occurrence),
             });
             Some(id)
         } else {
@@ -210,6 +226,15 @@ fn model_kind(value: &SchemaOccurrence<'_>) -> Option<ModelKind> {
         .map(|_| ModelKind::Dict)
         .or_else(|| value.list().map(|_| ModelKind::List))
 }
+
+fn primary_key_fields(value: &SchemaOccurrence<'_>) -> Vec<String> {
+    value
+        .list()
+        .filter(|list| !list.allow_duplicate_primary_key)
+        .and_then(|list| list.primary_key.as_deref())
+        .map(|primary_key| vec![primary_key.to_owned()])
+        .unwrap_or_default()
+}
 fn scalar_kind(value: SchemaId) -> Option<ScalarKind> {
     match value {
         SchemaId::Bool(_) => Some(ScalarKind::Bool),
@@ -240,6 +265,14 @@ fn registry_hash(root: ModelId, models: &[NominalModel], fields: &[NominalField]
             hash_string(&mut state, part);
         }
         state.update(&[0xff]);
+        state.update(
+            &u64::try_from(model.primary_key_fields.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        for field in &model.primary_key_fields {
+            hash_string(&mut state, field);
+        }
     }
     for field in fields {
         state.update(&field.id.0.to_le_bytes());
@@ -320,5 +353,17 @@ mod tests {
         let changed =
             build_nominal_model_ir(&changed_source, "root").expect("valid changed registry");
         assert_ne!(ir.registry_hash, changed.registry_hash);
+    }
+
+    #[test]
+    fn indexed_lists_retain_component_based_primary_key_metadata() {
+        let source = StoreSource::from_json(
+            r#"{"root":{"type":"dict","keys":{"indexed":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"name":{"type":"str"}}}},"duplicates":{"type":"list","primary_key":"name","allow_duplicate_primary_key":true,"items":{"type":"dict","keys":{"name":{"type":"str"}}}}}}}"#,
+        )
+        .expect("valid source");
+        let ir = build_nominal_model_ir(&source, "root").expect("valid registry");
+
+        assert_eq!(ir.models[1].primary_key_fields, ["name"]);
+        assert!(ir.models[3].primary_key_fields.is_empty());
     }
 }
