@@ -35,6 +35,9 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     assert "pub struct Item<'a>(::validation::archive::DictView<'a>);" in rust_source
     assert "pub fn interface_profiles(" in rust_source
     assert "class SchemaGenerationFixture:" in pyi_source
+    assert "class StrValue:" not in pyi_source
+    assert "Sequence[str]" in pyi_source
+    assert "-> str | None" in pyi_source
     ast.parse(pyi_source)
 
 

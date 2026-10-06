@@ -73,6 +73,7 @@ _RUST_KEYWORDS = frozenset(
         "yield",
     ]
 )
+_PYTHON_SCALAR_TYPES = {"Bool": "bool", "Int": "int", "Str": "str"}
 
 
 def generate_validated_data_models(
@@ -212,6 +213,15 @@ def _target(field: dict[str, Any]) -> tuple[str, int | str]:
     if "Model" in target:
         return ("Model", int(target["Model"]))
     return ("Scalar", str(target["Scalar"]))
+
+
+def _python_scalar_type(target: int | str) -> str:
+    """Return the native Python type exposed for one scalar target."""
+    try:
+        return _PYTHON_SCALAR_TYPES[str(target)]
+    except KeyError as error:
+        msg = f"unsupported scalar target for Python declarations: {target}"
+        raise ValueError(msg) from error
 
 
 def _render_rust(
@@ -411,9 +421,6 @@ def _render_pyi(
         "# Generated from the AVD schema. Do not edit by hand.\n",
         "# ruff: noqa: N802\n",
         "from collections.abc import Sequence\n\n",
-        "class BoolValue:\n    @property\n    def value(self) -> bool | None: ...\n\n",
-        "class IntValue:\n    @property\n    def value(self) -> int | None: ...\n\n",
-        "class StrValue:\n    @property\n    def value(self) -> str | None: ...\n\n",
         "class _Value: ...\n\n",
     ]
     definitions: list[tuple[str, bool]] = []
@@ -428,7 +435,7 @@ def _render_pyi(
             item_type = "_Value"
             if item is not None:
                 target_kind, target = _target(item)
-                item_type = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
+                item_type = names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
             definitions.append((f"class {name}(\n    Sequence[{item_type}],\n): ...", True))
             continue
         static_fields = [field for field in by_parent.get(model_id, []) if _relation(field)[0] == "Key"]
@@ -439,7 +446,7 @@ def _render_pyi(
         for field in static_fields:
             key = _relation(field)[1]
             target_kind, target = _target(field)
-            annotation = names[int(target)].removesuffix("View") if target_kind == "Model" else f"{target}Value"
+            annotation = names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
             body.append(f"    @property\n    def {_identifier(str(key))}(\n        self,\n    ) -> {annotation} | None: ...\n")
         definitions.append(("".join(body).rstrip(), False))
     output = ["".join(header)]
