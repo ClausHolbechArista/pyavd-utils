@@ -79,6 +79,9 @@ jobs:
           python-version: "3.14"
       - name: Install YAML test suite fixture
         run: python scripts/fetch_yaml_test_suite.py
+      # Keep this package isolated from the workspace's all-features test build.
+      - name: Test avdschema with default features
+        run: cargo test --locked -p avdschema
       - name: Run all tests
         run: cargo test --locked --all-targets --all-features
       - name: Install uv
