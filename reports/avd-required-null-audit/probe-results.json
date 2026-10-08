@@ -1,0 +1,1241 @@
+{
+  "avd_checkout": "/home/holbech/repos/avd",
+  "inventory": {
+    "avd_revision": "d3ef7981bdc62f68bcc4211e7d7e691505cf5c3d",
+    "direct_primary_required_occurrences_excluded": 837,
+    "field_occurrences": 17579,
+    "field_structure_matches_current_yaml": true,
+    "group_structure_matches_current_yaml": true,
+    "maximum_reference_chain_depth": 8,
+    "nested_name_below_name_primary_key_included": true,
+    "removed_required_occurrences_excluded": 1,
+    "required_direct_primary_key_excluded": true,
+    "resolved_reference_rows": 17502,
+    "review_annotated_field_rows": 17579,
+    "review_annotated_source_groups": 658,
+    "source_groups": 658,
+    "unresolved_references_or_cycles": "none; traversal completed"
+  },
+  "methods": {
+    "cv_topology_none_guard": {
+      "config_from_no_topology": { "value": {} },
+      "cv_topology_is_none": true
+    },
+    "cv_topology_null_required_level_comparison": {
+      "config_with_neighbor": {
+        "exception": {
+          "message": "'<' not supported between instances of 'int' and 'NoneType'",
+          "type": "TypeError"
+        }
+      },
+      "level_accessor": { "value": null },
+      "model_level": null
+    },
+    "evpn_bundle_null_id_rd_helper": {
+      "model_id": null,
+      "result": {
+        "exception": {
+          "message": "unsupported operand type(s) for +: 'NoneType' and 'int'",
+          "type": "TypeError"
+        }
+      }
+    },
+    "evpn_bundle_null_id_rt_helper": {
+      "model_id": null,
+      "result": {
+        "exception": {
+          "message": "unsupported operand type(s) for +: 'NoneType' and 'int'",
+          "type": "TypeError"
+        }
+      }
+    },
+    "point_to_point_null_endpoint_id_with_subinterface": {
+      "model_id": null,
+      "result": {
+        "exception": {
+          "message": "unsupported operand type(s) for +: 'NoneType' and 'int'",
+          "type": "TypeError"
+        }
+      }
+    },
+    "underlay_ospf_null_cleartext_encryption": {
+      "model_cleartext_key": null,
+      "result": {
+        "exception": {
+          "message": "Password is required for encryption/decryption",
+          "type": "ValueError"
+        }
+      }
+    },
+    "vrf_ospf_null_cleartext_missing_key_error": {
+      "model_cleartext_key": null,
+      "result": {
+        "exception": {
+          "message": "cannot access local variable 'msg' where it is not associated with a value",
+          "type": "UnboundLocalError"
+        }
+      }
+    },
+    "wan_path_group_null_id_loader_and_helper_fallback": {
+      "configured_path_group_result": { "value": 500 },
+      "lan_ha_fallback_result": { "value": 65535 },
+      "model_id": null
+    }
+  },
+  "models": {
+    "after_later_layer": {
+      "vlan_internal_order": {
+        "range": { "beginning": 100, "ending": 200 }
+      }
+    },
+    "after_null_layer": {
+      "vlan_internal_order": {
+        "range": { "beginning": 100, "ending": 200 }
+      }
+    },
+    "explicit_null_child_dump": { "vlan_internal_order": null },
+    "intermediate_null_sets_inheritance_block": true,
+    "null_collection_dump": { "agents": null },
+    "null_collection_has_null_origin": true,
+    "scalar_null_dump": {
+      "vlan_internal_order": {
+        "allocation": null,
+        "range": { "beginning": null, "ending": null }
+      }
+    },
+    "scalar_null_is_preserved": true
+  },
+  "output_validation": {
+    "arp_ipv4_address_none": {
+      "after_strip": {
+        "arp": {
+          "static_entries": [
+            {
+              "mac_address": "0011.2233.4455",
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'ipv4_address'.",
+            "path": [
+              "arp",
+              "static_entries",
+              "0"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "arp": {
+            "static_entries": [
+              {
+                "ipv4_address": null,
+                "mac_address": "0011.2233.4455",
+                "vrf": "default"
+              }
+            ]
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "arp": {
+          "static_entries": [
+            {
+              "mac_address": "0011.2233.4455",
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'ipv4_address'.",
+            "path": [
+              "arp",
+              "static_entries",
+              "0"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "arp": {
+          "static_entries": [
+            {
+              "ipv4_address": null,
+              "mac_address": "0011.2233.4455",
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "override": null
+    },
+    "arp_mac_address_none": {
+      "after_strip": {
+        "arp": {
+          "static_entries": [
+            {
+              "ipv4_address": "192.0.2.10",
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'mac_address'.",
+            "path": [
+              "arp",
+              "static_entries",
+              "0"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "arp": {
+            "static_entries": [
+              {
+                "ipv4_address": "192.0.2.10",
+                "mac_address": null,
+                "vrf": "default"
+              }
+            ]
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "arp": {
+          "static_entries": [
+            {
+              "ipv4_address": "192.0.2.10",
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'mac_address'.",
+            "path": [
+              "arp",
+              "static_entries",
+              "0"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "arp": {
+          "static_entries": [
+            {
+              "ipv4_address": "192.0.2.10",
+              "mac_address": null,
+              "vrf": "default"
+            }
+          ]
+        }
+      },
+      "override": null
+    },
+    "bfd_multihop_interval_none": {
+      "after_strip": {
+        "router_bfd": {
+          "multihop": {
+            "min_rx": 300,
+            "multiplier": 3
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "min_rx": 300,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": null,
+              "min_rx": 300,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "router_bfd": {
+          "multihop": {
+            "min_rx": 300,
+            "multiplier": 3
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "min_rx": 300,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "input": {
+        "router_bfd": {
+          "multihop": {
+            "interval": null,
+            "min_rx": 300,
+            "multiplier": 3
+          }
+        }
+      },
+      "override": null
+    },
+    "bfd_multihop_min_rx_none": {
+      "after_strip": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "multiplier": 3
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "min_rx": null,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "multiplier": 3
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "multiplier": 3
+            }
+          }
+        },
+        "violations": []
+      },
+      "input": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "min_rx": null,
+            "multiplier": 3
+          }
+        }
+      },
+      "override": null
+    },
+    "bfd_multihop_multiplier_none": {
+      "after_strip": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "min_rx": 300
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "min_rx": 300
+            }
+          }
+        },
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "min_rx": 300,
+              "multiplier": null
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "min_rx": 300
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {
+          "router_bfd": {
+            "multihop": {
+              "interval": 300,
+              "min_rx": 300
+            }
+          }
+        },
+        "violations": []
+      },
+      "input": {
+        "router_bfd": {
+          "multihop": {
+            "interval": 300,
+            "min_rx": 300,
+            "multiplier": null
+          }
+        }
+      },
+      "override": null
+    },
+    "dot1x_username_format_all_null": {
+      "after_strip": {},
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "dot1x": {
+            "radius_av_pair_username_format": {
+              "delimiter": null,
+              "mac_string_case": null
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {},
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "input": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "delimiter": null,
+            "mac_string_case": null
+          }
+        }
+      },
+      "override": null
+    },
+    "dot1x_username_format_delimiter_none": {
+      "after_strip": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "mac_string_case": "lowercase"
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'delimiter'.",
+            "path": [
+              "dot1x",
+              "radius_av_pair_username_format"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "dot1x": {
+            "radius_av_pair_username_format": {
+              "delimiter": null,
+              "mac_string_case": "lowercase"
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "mac_string_case": "lowercase"
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'delimiter'.",
+            "path": [
+              "dot1x",
+              "radius_av_pair_username_format"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "delimiter": null,
+            "mac_string_case": "lowercase"
+          }
+        }
+      },
+      "override": null
+    },
+    "dot1x_username_format_mac_string_case_none": {
+      "after_strip": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "delimiter": "colon"
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'mac_string_case'.",
+            "path": [
+              "dot1x",
+              "radius_av_pair_username_format"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "dot1x": {
+            "radius_av_pair_username_format": {
+              "delimiter": "colon",
+              "mac_string_case": null
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "delimiter": "colon"
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'mac_string_case'.",
+            "path": [
+              "dot1x",
+              "radius_av_pair_username_format"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "dot1x": {
+          "radius_av_pair_username_format": {
+            "delimiter": "colon",
+            "mac_string_case": null
+          }
+        }
+      },
+      "override": null
+    },
+    "ipv4_prefix_list_action_none": {
+      "after_strip": {
+        "prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'action'.",
+            "path": [
+              "prefix_lists",
+              "0",
+              "sequence_numbers",
+              "0"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "prefix_lists": [
+            {
+              "name": "PL",
+              "sequence_numbers": [
+                {
+                  "action": null,
+                  "sequence": 10
+                }
+              ]
+            }
+          ]
+        },
+        "violations": []
+      },
+      "final_output": {
+        "prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'action'.",
+            "path": [
+              "prefix_lists",
+              "0",
+              "sequence_numbers",
+              "0"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "action": null,
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "override": null
+    },
+    "ipv6_prefix_list_action_none": {
+      "after_strip": {
+        "ipv6_prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'action'.",
+            "path": [
+              "ipv6_prefix_lists",
+              "0",
+              "sequence_numbers",
+              "0"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "ipv6_prefix_lists": [
+            {
+              "name": "PL",
+              "sequence_numbers": [
+                {
+                  "action": null,
+                  "sequence": 10
+                }
+              ]
+            }
+          ]
+        },
+        "violations": []
+      },
+      "final_output": {
+        "ipv6_prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'action'.",
+            "path": [
+              "ipv6_prefix_lists",
+              "0",
+              "sequence_numbers",
+              "0"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "ipv6_prefix_lists": [
+          {
+            "name": "PL",
+            "sequence_numbers": [
+              {
+                "action": null,
+                "sequence": 10
+              }
+            ]
+          }
+        ]
+      },
+      "override": null
+    },
+    "optional_prefix_lists_parent_null": {
+      "after_strip": {},
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "prefix_lists": null
+        },
+        "violations": []
+      },
+      "final_output": {},
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "input": {
+        "prefix_lists": null
+      },
+      "override": null
+    },
+    "optional_static_routes_parent_null": {
+      "after_strip": {},
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "static_routes": null
+        },
+        "violations": []
+      },
+      "final_output": {},
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "input": {
+        "static_routes": null
+      },
+      "override": null
+    },
+    "static_route_prefix_none": {
+      "after_strip": {
+        "static_routes": [
+          {
+            "next_hop": "192.0.2.1"
+          }
+        ]
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'prefix'.",
+            "path": [
+              "static_routes",
+              "0"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "static_routes": [
+            {
+              "next_hop": "192.0.2.1",
+              "prefix": null
+            }
+          ]
+        },
+        "violations": []
+      },
+      "final_output": {
+        "static_routes": [
+          {
+            "next_hop": "192.0.2.1"
+          }
+        ]
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'prefix'.",
+            "path": [
+              "static_routes",
+              "0"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "static_routes": [
+          {
+            "next_hop": "192.0.2.1",
+            "prefix": null
+          }
+        ]
+      },
+      "override": null
+    },
+    "vlan_internal_order_all_null": {
+      "after_strip": {},
+      "after_strip_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": null,
+            "range": {
+              "beginning": null,
+              "ending": null
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {},
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {},
+        "violations": []
+      },
+      "input": {
+        "vlan_internal_order": {
+          "allocation": null,
+          "range": {
+            "beginning": null,
+            "ending": null
+          }
+        }
+      },
+      "override": null
+    },
+    "vlan_internal_order_allocation_none": {
+      "after_strip": {
+        "vlan_internal_order": {
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'allocation'.",
+            "path": [
+              "vlan_internal_order"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": null,
+            "range": {
+              "beginning": 2,
+              "ending": 4094
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "vlan_internal_order": {
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'allocation'.",
+            "path": [
+              "vlan_internal_order"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "vlan_internal_order": {
+          "allocation": null,
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "override": null
+    },
+    "vlan_internal_order_allocation_repaired_by_override": {
+      "after_strip": {
+        "vlan_internal_order": {
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'allocation'.",
+            "path": [
+              "vlan_internal_order"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": null,
+            "range": {
+              "beginning": 2,
+              "ending": 4094
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": "ascending",
+            "range": {
+              "beginning": 2,
+              "ending": 4094
+            }
+          }
+        },
+        "violations": []
+      },
+      "input": {
+        "vlan_internal_order": {
+          "allocation": null,
+          "range": {
+            "beginning": 2,
+            "ending": 4094
+          }
+        }
+      },
+      "override": {
+        "vlan_internal_order": {
+          "allocation": "ascending"
+        }
+      }
+    },
+    "vlan_internal_order_beginning_none": {
+      "after_strip": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "ending": 4094
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'beginning'.",
+            "path": [
+              "vlan_internal_order",
+              "range"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": "ascending",
+            "range": {
+              "beginning": null,
+              "ending": 4094
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "ending": 4094
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'beginning'.",
+            "path": [
+              "vlan_internal_order",
+              "range"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "beginning": null,
+            "ending": 4094
+          }
+        }
+      },
+      "override": null
+    },
+    "vlan_internal_order_ending_none": {
+      "after_strip": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "beginning": 2
+          }
+        }
+      },
+      "after_strip_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'ending'.",
+            "path": [
+              "vlan_internal_order",
+              "range"
+            ]
+          }
+        ]
+      },
+      "direct_validation": {
+        "accepted": true,
+        "validated_data": {
+          "vlan_internal_order": {
+            "allocation": "ascending",
+            "range": {
+              "beginning": 2,
+              "ending": null
+            }
+          }
+        },
+        "violations": []
+      },
+      "final_output": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "beginning": 2
+          }
+        }
+      },
+      "final_validation": {
+        "accepted": false,
+        "validated_data": null,
+        "violations": [
+          {
+            "message": "Missing the required key 'ending'.",
+            "path": [
+              "vlan_internal_order",
+              "range"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "vlan_internal_order": {
+          "allocation": "ascending",
+          "range": {
+            "beginning": 2,
+            "ending": null
+          }
+        }
+      },
+      "override": null
+    }
+  },
+  "output_validation_context": {
+    "api": "pyavd.validate_structured_config",
+    "ignore_required_keys_on_root_dict": false,
+    "restrict_null_values": false,
+    "schema_archive": "/home/holbech/repos/avd/python-avd/pyavd/_schema/schemas.rkyv",
+    "schema_archive_sha256": "0b27cbc51d04e49bab710a65a8337abb76d0a7a69649f635c39c8c01c412e7f7",
+    "schema_name": "eos_config",
+    "scope": "Synthetic final EOS models, stripping, optional override merge and public validation; not full design generation."
+  },
+  "scope": "read-only schema traversal, source-template fragment renders, generated-model and isolated real-method probes",
+  "templates": {
+    "agents_environment_value_none": {
+      "value": "!\nagent agent-x environment TOKEN=None\n"
+    },
+    "dot1x_required_enabled_none": { "value": "dot1x\n" },
+    "ethernet_required_child_none": {
+      "value": "!\ninterface Ethernet1\n   link tracking group UPSTREAM None\n"
+    },
+    "ipv4_prefix_list_required_action_none": { "value": "!\nip prefix-list PL-TEST\n" },
+    "ipv6_prefix_list_required_action_none": {
+      "value": "!\nipv6 prefix-list PL-TEST\n   seq 10 None\n"
+    },
+    "static_route_required_prefix_none": {
+      "value": "!\nip route None 192.0.2.1\n"
+    },
+    "vlan_internal_order_required_scalars_none": { "value": "" }
+  }
+}

@@ -91,6 +91,8 @@ pub use self::generation::DocumentationGenerationError;
 #[cfg(feature = "generation")]
 pub use self::generation::generate_markdown_documentation;
 #[cfg(feature = "generation")]
+pub use self::generation::FieldId;
+#[cfg(feature = "generation")]
 pub use self::generation::FieldRelation;
 #[cfg(feature = "generation")]
 pub use self::generation::FieldTarget;
@@ -113,11 +115,15 @@ pub use self::generation::SlotId;
 #[cfg(feature = "generation")]
 pub use self::generation::build_nominal_model_ir;
 #[cfg(feature = "generation")]
+pub use self::generation::build_nominal_model_ir_with_reused_schemas;
+#[cfg(feature = "generation")]
 pub use self::generation::generate_python_models;
 #[cfg(feature = "generation")]
 pub use self::generation::generate_python_models_projection;
 #[cfg(feature = "generation")]
 pub use self::generation::nominal_model_ir_json;
+#[cfg(feature = "generation")]
+pub use self::generation::nominal_model_ir_with_reused_schemas_json;
 pub use self::inherit::Inherit;
 #[cfg(feature = "metaschema")]
 pub use self::metaschema::generate_metaschema_json;

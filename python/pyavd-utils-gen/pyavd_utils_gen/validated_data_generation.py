@@ -9,6 +9,7 @@ import hashlib
 import json
 import keyword
 import re
+import shutil
 from typing import TYPE_CHECKING, Any
 
 from .schema_generation import build_nominal_model_registry
@@ -85,6 +86,7 @@ def generate_validated_data_models(
     rust_root_name: str,
     python_root_name: str,
     root_keys: list[str] | None = None,
+    reused_schemas: dict[str, tuple[str, str]] | None = None,
 ) -> None:
     """
     Generate checked-in Rust views and Python declarations from one schema root.
@@ -92,7 +94,9 @@ def generate_validated_data_models(
     Args:
         source: Combined source schema containing ``schema_name``.
         schema_name: Name of the schema root to generate from.
-        rust_destination: Destination for the Rust model registry and views.
+        rust_destination: Destination for the Rust model registry root. Generated schema modules
+            are written below a sibling directory with the same stem, replacing any previous
+            generated module tree.
         python_destination: Destination for the Python runtime view classes.
         pyi_destination: Destination for the corresponding Python declarations.
         rust_root_name: Public Rust name of the root model, using Rust naming conventions.
@@ -100,16 +104,24 @@ def generate_validated_data_models(
         root_keys: Optional static root keys to expose. Descendants of selected keys
             remain complete, while unselected root branches are omitted from the
             generated API. The runtime validated-data archive remains complete.
+        reused_schemas: Schema names whose complete generated model catalogs should be
+            reused for pure cross-schema references. Values contain the Rust and Python
+            root names respectively.
     """
-    registry = build_nominal_model_registry(source, schema_name)
+    reused_schemas = reused_schemas or {}
+    registry = build_nominal_model_registry(source, schema_name, list(reused_schemas))
+    slots = {int(field["id"]): int(field["slot"]) for field in registry["fields"]}
     if root_keys is not None:
         registry = _project_registry(registry, root_keys)
     models = list(registry["models"])
     fields = list(registry["fields"])
-    names = _model_names(models, python_root_name)
-    rust_destination.write_text(_render_rust(registry, models, fields, rust_root_name), encoding="UTF-8")
-    python_destination.write_text(_render_python(models, fields, names, rust_root_name), encoding="UTF-8")
-    pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name), encoding="UTF-8")
+    python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
+    rust_root_names = {name: names[0] for name, names in reused_schemas.items()} | {schema_name: rust_root_name}
+    names = _model_names(models, python_root_names)
+    _write_rust(rust_destination, _render_rust(registry, models, fields, slots, rust_root_names))
+    root_model = int(registry["root"])
+    python_destination.write_text(_render_python(models, fields, slots, names, rust_root_name, root_model), encoding="UTF-8")
+    pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name, root_model), encoding="UTF-8")
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
@@ -157,12 +169,14 @@ def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[st
     }
 
 
-def _model_names(models: list[dict[str, Any]], root_name: str) -> dict[int, str]:
+def _model_names(models: list[dict[str, Any]], root_names: dict[str, str]) -> dict[int, str]:
     names: dict[int, str] = {}
     used: set[str] = set()
     for model in models:
         model_id = int(model["id"])
-        if model_id == 0:
+        schema_name = str(model["path"][0])
+        root_name = root_names[schema_name]
+        if len(model["path"]) == 1:
             candidate = root_name
         else:
             parts = [part for part in model["path"] if part != "keys"]
@@ -269,154 +283,183 @@ def _render_rust(
     registry: dict[str, Any],
     models: list[dict[str, Any]],
     fields: list[dict[str, Any]],
-    root_name: str,
-) -> str:
-    root_module = _rust_module_identifier(root_name)
-    if root_module == "__pyavd_generated_registry":
-        msg = f"root name {root_name!r} conflicts with the generated registry namespace"
+    slots: dict[int, int],
+    root_names: dict[str, str],
+) -> dict[tuple[str, ...], str]:
+    root_modules = {schema_name: _rust_module_identifier(root_name) for schema_name, root_name in root_names.items()}
+    if "__pyavd_generated_registry" in root_modules.values():
+        msg = "root name conflicts with the generated registry namespace"
         raise ValueError(msg)
     models_by_id = {int(model["id"]): model for model in models}
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         by_parent.setdefault(int(field["parent"]), []).append(field)
-    primary_keys = [(int(model["id"]), primary_key_fields) for model in models if (primary_key_fields := _primary_key_fields(model, models_by_id, by_parent))]
     output = [
         "// Copyright (c) 2026 Arista Networks, Inc.\n",
         "// Generated from the AVD schema. Do not edit by hand.\n\n",
         f"const REGISTRY_HASH: [u8; 32] = [{', '.join(str(value) for value in registry['registry_hash'])}];\n",
-        "mod __pyavd_generated_registry {\n",
-        "    use super::REGISTRY_HASH;\n",
-        "    use ::validation::archive::{FieldDescriptor, FieldRelation, ModelRegistry, PrimaryKeyDescriptor};\n\n",
     ]
-    output.append("    static FIELDS: &[FieldDescriptor] = &[\n")
-    for field in fields:
-        kind, value = _relation(field)
-        relation = f"FieldRelation::{kind}" if value is None else f"FieldRelation::{kind}({json.dumps(value)})"
-        target_kind, target = _target(field)
-        target_model = f"Some({target})" if target_kind == "Model" else "None"
-        output.append(
-            f"        FieldDescriptor {{ id: {field['id']}, parent_model: {field['parent']}, relation: {relation}, target_model: {target_model} }},\n"
-        )
-    output.append("    ];\n")
-    for model_id, primary_key_fields in primary_keys:
-        slots = ", ".join(str(field["id"]) for field in primary_key_fields)
-        output.append(f"    static PRIMARY_KEY_FIELDS_{model_id}: &[u32] = &[{slots}];\n")
-    output.append("    static PRIMARY_KEYS: &[PrimaryKeyDescriptor] = &[\n")
-    for model_id, _ in primary_keys:
-        output.append(f"        PrimaryKeyDescriptor {{ model: {model_id}, field_slots: PRIMARY_KEY_FIELDS_{model_id} }},\n")
-    output.append("    ];\n")
-    output.append(
-        f"    pub const REGISTRY: ModelRegistry = ModelRegistry {{ root_model: {registry['root']}, "
-        "hash: REGISTRY_HASH, fields: FIELDS, primary_keys: PRIMARY_KEYS };\n"
-    )
-    output.append("}\n")
-    output.append("pub use __pyavd_generated_registry::REGISTRY;\n\n")
+    module_outputs: dict[tuple[str, ...], list[str]] = {}
     visited: set[int] = set()
-    output.append(f"pub mod {root_module} {{\n")
-    output.extend(
-        _render_rust_model(
-            int(registry["root"]),
-            _rust_type_identifier(root_name),
-            None,
-            models_by_id,
-            by_parent,
-            visited,
-            "    ",
+    locations: dict[int, tuple[str, ...]] = {}
+    for schema_name, root_id in registry["roots"].items():
+        root_name = root_names[schema_name]
+        root_module = root_modules[schema_name]
+        output.append(f"pub mod {root_module};\n")
+        root_output = module_outputs.setdefault((root_module,), [])
+        root_output.extend(
+            _render_rust_model(
+                int(root_id),
+                _rust_type_identifier(root_name),
+                None,
+                schema_name,
+                (root_module,),
+                models_by_id,
+                by_parent,
+                slots,
+                locations,
+                visited,
+                "",
+                module_outputs,
+            )
         )
+    primary_schema_name = next(name for name, root_id in registry["roots"].items() if int(root_id) == int(registry["root"]))
+    primary_root_name = _rust_type_identifier(root_names[primary_schema_name])
+    output.extend(
+        [
+            "pub const REGISTRY: ::validation::archive::ModelRegistry = ::validation::archive::ModelRegistry {\n",
+            (
+                f"    root_model: <{root_modules[primary_schema_name]}::{primary_root_name}<'static> "
+                "as ::validation::archive::ArchiveModel>::DESCRIPTOR,\n"
+            ),
+            "    hash: REGISTRY_HASH,\n",
+            "};\n",
+        ]
     )
-    output.append("}\n")
     if visited != models_by_id.keys():
         missing = ", ".join(str(model_id) for model_id in sorted(models_by_id.keys() - visited))
         msg = f"nominal model registry contains unreachable model(s): {missing}"
         raise ValueError(msg)
-    return "".join(output)
+    return {(): "".join(output)} | {path: "".join(parts) for path, parts in module_outputs.items()}
+
+
+def _write_rust(destination: Path, sources: dict[tuple[str, ...], str]) -> None:
+    """Replace one generated Rust module tree with deterministic source files."""
+    module_directory = destination.with_suffix("")
+    if module_directory.exists():
+        if not module_directory.is_dir():
+            msg = f"generated Rust module path is not a directory: {module_directory}"
+            raise ValueError(msg)
+        shutil.rmtree(module_directory)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(sources[()], encoding="UTF-8")
+    header = "// Copyright (c) 2026 Arista Networks, Inc.\n// Generated from the AVD schema. Do not edit by hand.\n\n"
+    for module_path, source in sorted(sources.items()):
+        if not module_path:
+            continue
+        module_file = module_directory.joinpath(*module_path[:-1], f"{module_path[-1]}.rs")
+        module_file.parent.mkdir(parents=True, exist_ok=True)
+        module_file.write_text(f"{header}{source}", encoding="UTF-8")
 
 
 def _render_rust_model(
     model_id: int,
     type_name: str,
     namespace_name: str | None,
+    schema_name: str,
+    scope: tuple[str, ...],
     models: dict[int, dict[str, Any]],
     by_parent: dict[int, list[dict[str, Any]]],
+    slots: dict[int, int],
+    locations: dict[int, tuple[str, ...]],
     visited: set[int],
     indent: str,
+    module_outputs: dict[tuple[str, ...], list[str]],
 ) -> list[str]:
     """Render one nominal model and recursively nest its child occurrences."""
     if model_id in visited:
         msg = f"nominal model {model_id} is reachable from more than one relationship"
         raise ValueError(msg)
     visited.add(model_id)
+    locations[model_id] = (*scope, type_name)
     model = models.get(model_id)
     if model is None:
         msg = f"nominal model registry references missing model {model_id}"
         raise ValueError(msg)
 
     kind = str(model["kind"])
-    archive_view = "DictView" if kind == "Dict" else "ListView"
     fields = by_parent.get(model_id, [])
     child_names = _rust_child_names(fields, frozenset({type_name}))
-    output = [
-        f"{indent}#[derive(Clone, Copy, Debug)]\n",
-        f"{indent}pub struct {type_name}<'a>(::validation::archive::{archive_view}<'a>);\n",
-        f"{indent}impl<'a> {type_name}<'a> {{\n",
-        (
-            f"{indent}    pub fn from_value(value: ::validation::archive::ValueView<'a>) -> ::core::option::Option<Self> "
-            f"{{ value.as_{'dict' if kind == 'Dict' else 'list'}().map(Self) }}\n"
-        ),
-    ]
+    macro_name = "define_archive_dict_view"
+    item = None
+    if kind == "List":
+        item = next((field for field in fields if _relation(field)[0] == "Item"), None)
+        macro_name = "define_archive_indexed_list_view" if _primary_key_fields(model, models, by_parent) else "define_archive_list_view"
+    output = [f"{indent}::validation::{macro_name}! {{\n", f"{indent}    #[derive(Clone, Copy, Debug)]\n", f"{indent}    pub struct {type_name} {{\n"]
     if kind == "Dict":
         for field in fields:
             relation_kind, key = _relation(field)
-            if relation_kind != "Key" or key is None:
+            if key is None:
                 continue
-            return_type, conversion = _rust_target(field, models, child_names, namespace_name)
+            target_kind, target_type = _rust_macro_target(field, models, child_names, namespace_name, schema_name, scope, locations)
+            if relation_kind == "DynamicKey":
+                target_kind = f"dynamic_{target_kind}"
             output.append(
-                f"{indent}    pub fn {_identifier(key)}(self) -> ::core::option::Option<{return_type}> {{ self.0.field({field['id']}){conversion} }}\n"
+                f'{indent}        {target_kind} {_identifier(key)}({json.dumps(key)}, {slots[int(field["id"])]}) -> {target_type};\n'
             )
+    elif item is None:
+        output.append(f"{indent}        raw;\n")
     else:
-        item = next((field for field in fields if _relation(field)[0] == "Item"), None)
-        output.append(f"{indent}    pub fn len(self) -> usize {{ self.0.len() }}\n")
-        output.append(f"{indent}    pub fn is_empty(self) -> bool {{ self.0.is_empty() }}\n")
-        if item is None:
-            output.append(
-                f"{indent}    pub fn get(self, index: usize) -> ::core::option::Option<::validation::archive::ValueView<'a>> {{ self.0.get(index) }}\n"
-            )
-        else:
-            return_type, conversion = _rust_target(item, models, child_names, namespace_name)
-            output.append(f"{indent}    pub fn get(self, index: usize) -> ::core::option::Option<{return_type}> {{ self.0.get(index){conversion} }}\n")
-            if _primary_key_fields(model, models, by_parent):
-                output.append(
-                    f"{indent}    pub fn get_by_primary_key(self, key: &[::validation::archive::PrimaryKeyValue<'_>]) "
-                    f"-> ::core::option::Option<{return_type}> {{ self.0.get_by_primary_key(key){conversion} }}\n"
-                )
-    output.append(f"{indent}}}\n")
+        target_kind, target_type = _rust_macro_target(item, models, child_names, namespace_name, schema_name, scope, locations)
+        output.append(f'{indent}        {target_kind} item ({slots[int(item["id"])]}) -> {target_type};\n')
+        if macro_name == "define_archive_indexed_list_view":
+            primary_key_slots = ", ".join(str(slots[int(field["id"])]) for field in _primary_key_fields(model, models, by_parent))
+            output.append(f"{indent}        primary_key_fields: [{primary_key_slots}];\n")
+    output.extend([f"{indent}    }}\n", f"{indent}}}\n"])
 
     model_fields = [field for field in fields if _target(field)[0] == "Model"]
     if not model_fields:
         return output
 
+    child_output = output
     child_indent = indent
+    inline_namespace = False
     if namespace_name is not None:
-        output.append(f"\n{indent}pub mod {namespace_name} {{\n")
-        child_indent += "    "
+        if len(scope) == 1:
+            output.append(f"\n{indent}pub mod {namespace_name};\n")
+            child_output = module_outputs.setdefault((*scope, namespace_name), [])
+            child_indent = ""
+        else:
+            output.append(f"\n{indent}pub mod {namespace_name} {{\n")
+            child_indent += "    "
+            inline_namespace = True
     for field in model_fields:
         target_kind, target = _target(field)
         if target_kind != "Model":  # pragma: no cover - filtered above
             continue
+        target_id = int(target)
+        target_model = models[target_id]
+        if str(target_model["path"][0]) != schema_name:
+            continue
         module_name, child_type_name = child_names[int(field["id"])]
-        output.append("\n")
-        output.extend(
+        child_output.append("\n")
+        child_output.extend(
             _render_rust_model(
-                int(target),
+                target_id,
                 child_type_name,
                 module_name,
+                schema_name,
+                (*scope, namespace_name) if namespace_name is not None else scope,
                 models,
                 by_parent,
+                slots,
+                locations,
                 visited,
                 child_indent,
+                module_outputs,
             )
         )
-    if namespace_name is not None:
+    if inline_namespace:
         output.append(f"{indent}}}\n")
     return output
 
@@ -457,6 +500,9 @@ def _rust_target(
     models: dict[int, dict[str, Any]],
     child_names: dict[int, tuple[str, str]],
     namespace_name: str | None,
+    schema_name: str,
+    scope: tuple[str, ...],
+    locations: dict[int, tuple[str, ...]],
 ) -> tuple[str, str]:
     """Render one accessor target type and its zero-copy conversion."""
     target_kind, target = _target(field)
@@ -467,9 +513,36 @@ def _rust_target(
     if target_model is None:
         msg = f"nominal field {field['id']} references missing model {target_id}"
         raise ValueError(msg)
-    _, type_name = child_names[int(field["id"])]
-    qualified = type_name if namespace_name is None else f"{namespace_name}::{type_name}"
+    if str(target_model["path"][0]) != schema_name:
+        location = locations.get(target_id)
+        if location is None:
+            msg = f"external nominal model {target_id} must be rendered before use"
+            raise ValueError(msg)
+        qualified = "super::" * len(scope) + "::".join(location)
+    else:
+        _, type_name = child_names[int(field["id"])]
+        qualified = type_name if namespace_name is None else f"{namespace_name}::{type_name}"
     return (f"{qualified}<'a>", f".and_then({qualified}::from_value)")
+
+
+def _rust_macro_target(
+    field: dict[str, Any],
+    models: dict[int, dict[str, Any]],
+    child_names: dict[int, tuple[str, str]],
+    namespace_name: str | None,
+    schema_name: str,
+    scope: tuple[str, ...],
+    locations: dict[int, tuple[str, ...]],
+) -> tuple[str, str]:
+    """Return the macro field kind and its future typed Rust return marker."""
+    target_kind, target = _target(field)
+    if target_kind == "Scalar":
+        scalar_type = {"Bool": "bool", "Int": "i64", "Str": "&'a str"}[str(target)]
+        return ("scalar", scalar_type)
+    return (
+        "model",
+        _rust_target(field, models, child_names, namespace_name, schema_name, scope, locations)[0],
+    )
 
 
 def _python_target_type(field: dict[str, Any], names: dict[int, str]) -> str:
@@ -498,8 +571,10 @@ def _python_model_wrap(field: dict[str, Any], names: dict[int, str], value: str)
 def _render_python(
     models: list[dict[str, Any]],
     fields: list[dict[str, Any]],
+    slots: dict[int, int],
     names: dict[int, str],
     rust_root_name: str,
+    root_model: int,
 ) -> str:
     """Render Python model identities backed by generic PyO3 archive handles."""
     by_parent: dict[int, list[dict[str, Any]]] = {}
@@ -507,7 +582,7 @@ def _render_python(
         by_parent.setdefault(int(field["parent"]), []).append(field)
     models_by_id = {int(model["id"]): model for model in models}
     primary_key_field_ids = frozenset(int(field["id"]) for model in models for field in _primary_key_fields(model, models_by_id, by_parent))
-    root_name = names[0].removesuffix("View")
+    root_name = names[root_model].removesuffix("View")
     open_name = f"open_{_rust_module_identifier(rust_root_name)}"
     output = [
         "# Copyright (c) 2026 Arista Networks, Inc.\n",
@@ -535,7 +610,7 @@ def _render_python(
             for field in static_fields:
                 key = str(_relation(field)[1])
                 annotation = _python_field_type(field, names, primary_key_field_ids)
-                expression = _python_model_wrap(field, names, f"self._get_field({field['id']})")
+                expression = _python_model_wrap(field, names, f"self._get_field({slots[int(field['id'])]})")
                 output.extend(
                     [
                         "    @property\n",
@@ -627,6 +702,7 @@ def _render_pyi(
     fields: list[dict[str, Any]],
     names: dict[int, str],
     rust_root_name: str,
+    root_model: int,
 ) -> str:
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
@@ -693,7 +769,7 @@ def _render_pyi(
         )
         definitions.append("".join(body).rstrip())
     output = ["".join(header), "\n\n".join(definitions)]
-    root_name = names[0].removesuffix("View")
+    root_name = names[root_model].removesuffix("View")
     output.extend(
         [
             "\n\n",
