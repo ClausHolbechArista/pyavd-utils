@@ -36,7 +36,7 @@ use crate::ValidationResult;
 use crate::feedback::InputDiagnostic;
 
 const MAGIC: &[u8; 8] = b"AVDDATA\0";
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 const HEADER_LENGTH: usize = 16;
 /// Validation semantics used by typed validated-data archives.
 ///
@@ -55,69 +55,259 @@ pub enum FieldRelation {
     Item,
 }
 
-/// Model identity emitted by a schema generator.
+/// Relationships owned by one generated model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelDescriptor {
-    /// Registry-local identifier.
-    pub id: u32,
+    /// Dictionary fields or the item relationship of a list.
+    pub fields: &'static [FieldDescriptor],
+    /// Ordered item-field slots forming an indexed-list primary key.
+    pub primary_key_fields: &'static [u32],
 }
 /// One generated field or list-item relationship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldDescriptor {
-    /// Registry-local slot identifier.
+    /// Slot identifier local to the containing model.
     pub id: u32,
-    /// Model containing the relationship.
-    pub parent_model: u32,
     /// Relationship to the parent model.
     pub relation: FieldRelation,
     /// Nominal child model for collection values.
-    pub target_model: Option<u32>,
-}
-/// Ordered field slots forming the primary key for one indexed-list model.
-///
-/// Current schemas emit one component. The slice keeps archive and generated-code contracts ready
-/// for composite keys without exposing a single-field assumption.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PrimaryKeyDescriptor {
-    /// Indexed-list model containing the items.
-    pub model: u32,
-    /// Ordered field slots on each item model.
-    pub field_slots: &'static [u32],
+    pub target_model: Option<&'static ModelDescriptor>,
 }
 /// Static generated registry paired with an archive.
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRegistry {
-    /// Root model identifier.
-    pub root_model: u32,
+    /// Root model descriptor.
+    pub root_model: ModelDescriptor,
     /// Hash emitted from the nominal schema IR.
     pub hash: [u8; 32],
-    /// Field and item relationships.
-    pub fields: &'static [FieldDescriptor],
-    /// Indexed-list primary-key definitions.
-    pub primary_keys: &'static [PrimaryKeyDescriptor],
 }
 
-impl ModelRegistry {
-    fn field(self, parent: u32, key: &str) -> Option<FieldDescriptor> {
-        self.fields.iter().copied().find(|field| {
-            field.parent_model == parent
-                && matches!(field.relation, FieldRelation::Key(field_key) if field_key == key)
-        })
+impl ModelDescriptor {
+    fn field(&self, key: &str) -> Option<FieldDescriptor> {
+        self.fields.iter().copied().find(
+            |field| matches!(field.relation, FieldRelation::Key(field_key) if field_key == key),
+        )
     }
 
-    fn item(self, parent: u32) -> Option<FieldDescriptor> {
+    fn item(&self) -> Option<FieldDescriptor> {
         self.fields
             .iter()
             .copied()
-            .find(|field| field.parent_model == parent && field.relation == FieldRelation::Item)
+            .find(|field| field.relation == FieldRelation::Item)
     }
+}
 
-    fn primary_key(self, model: u32) -> Option<PrimaryKeyDescriptor> {
-        self.primary_keys
-            .iter()
-            .copied()
-            .find(|descriptor| descriptor.model == model)
-    }
+/// Generated view type carrying the descriptor used while publishing its model.
+#[allow(
+    clippy::module_name_repetitions,
+    reason = "The trait is scoped to the archive API and names its contract."
+)]
+pub trait ArchiveModel {
+    /// Static relationships for this model.
+    const DESCRIPTOR: ModelDescriptor;
+}
+
+/// Define a typed immutable dictionary view over archived validated data.
+///
+/// Scalar type markers are retained in the generated invocation so the macro can expose typed
+/// scalar results without changing the generator output when the typed field API is introduced.
+#[macro_export]
+macro_rules! define_archive_dict_view {
+    (
+        $(#[$attribute:meta])*
+        $visibility:vis struct $name:ident {
+            $( $kind:ident $method:ident ($key:literal, $slot:expr) -> $target:ty; )*
+        }
+    ) => {
+        $(#[$attribute])*
+        $visibility struct $name<'a>($crate::archive::DictView<'a>);
+        impl<'a> $name<'a> {
+            pub fn from_value(value: $crate::archive::ValueView<'a>) -> ::core::option::Option<Self> {
+                value.as_dict().map(Self)
+            }
+            $(
+                $crate::define_archive_dict_view!(@field $kind $method, $slot, $target);
+            )*
+        }
+        impl<'a> $crate::archive::ArchiveModel for $name<'a> {
+            const DESCRIPTOR: $crate::archive::ModelDescriptor = $crate::archive::ModelDescriptor {
+                fields: &[
+                    $(
+                        $crate::define_archive_dict_view!(@descriptor $kind, $key, $slot, $target),
+                    )*
+                ],
+                primary_key_fields: &[],
+            };
+        }
+    };
+    (@field scalar $method:ident, $slot:expr, $target:ty) => {
+        pub fn $method(self) -> ::core::option::Option<$crate::archive::ValueView<'a>> {
+            self.0.field($slot)
+        }
+    };
+    (@field model $method:ident, $slot:expr, $target:ty) => {
+        pub fn $method(self) -> ::core::option::Option<$target> {
+            self.0.field($slot).and_then(<$target>::from_value)
+        }
+    };
+    (@field dynamic_scalar $method:ident, $slot:expr, $target:ty) => {};
+    (@field dynamic_model $method:ident, $slot:expr, $target:ty) => {};
+    (@descriptor scalar, $key:literal, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::Key($key),
+            target_model: ::core::option::Option::None,
+        }
+    };
+    (@descriptor model, $key:literal, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::Key($key),
+            target_model: ::core::option::Option::Some(
+                &<$target as $crate::archive::ArchiveModel>::DESCRIPTOR,
+            ),
+        }
+    };
+    (@descriptor dynamic_scalar, $path:literal, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::DynamicKey($path),
+            target_model: ::core::option::Option::None,
+        }
+    };
+    (@descriptor dynamic_model, $path:literal, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::DynamicKey($path),
+            target_model: ::core::option::Option::Some(
+                &<$target as $crate::archive::ArchiveModel>::DESCRIPTOR,
+            ),
+        }
+    };
+}
+
+/// Define a typed immutable list view over archived validated data.
+#[macro_export]
+macro_rules! define_archive_list_view {
+    (
+        $(#[$attribute:meta])*
+        $visibility:vis struct $name:ident { raw; }
+    ) => {
+        $(#[$attribute])*
+        $visibility struct $name<'a>($crate::archive::ListView<'a>);
+        impl<'a> $name<'a> {
+            pub fn from_value(value: $crate::archive::ValueView<'a>) -> ::core::option::Option<Self> {
+                value.as_list().map(Self)
+            }
+            pub fn len(self) -> usize { self.0.len() }
+            pub fn is_empty(self) -> bool { self.0.is_empty() }
+            pub fn get(self, index: usize) -> ::core::option::Option<$crate::archive::ValueView<'a>> {
+                self.0.get(index)
+            }
+        }
+        impl<'a> $crate::archive::ArchiveModel for $name<'a> {
+            const DESCRIPTOR: $crate::archive::ModelDescriptor = $crate::archive::ModelDescriptor {
+                fields: &[],
+                primary_key_fields: &[],
+            };
+        }
+    };
+    (
+        $(#[$attribute:meta])*
+        $visibility:vis struct $name:ident {
+            $kind:ident item ($slot:expr) -> $target:ty;
+        }
+    ) => {
+        $(#[$attribute])*
+        $visibility struct $name<'a>($crate::archive::ListView<'a>);
+        impl<'a> $name<'a> {
+            pub fn from_value(value: $crate::archive::ValueView<'a>) -> ::core::option::Option<Self> {
+                value.as_list().map(Self)
+            }
+            pub fn len(self) -> usize { self.0.len() }
+            pub fn is_empty(self) -> bool { self.0.is_empty() }
+            $crate::define_archive_list_view!(@get $kind, $target);
+        }
+        impl<'a> $crate::archive::ArchiveModel for $name<'a> {
+            const DESCRIPTOR: $crate::archive::ModelDescriptor = $crate::archive::ModelDescriptor {
+                fields: &[
+                    $crate::define_archive_list_view!(@descriptor $kind, $slot, $target),
+                ],
+                primary_key_fields: &[],
+            };
+        }
+    };
+    (@get scalar, $target:ty) => {
+        pub fn get(self, index: usize) -> ::core::option::Option<$crate::archive::ValueView<'a>> {
+            self.0.get(index)
+        }
+    };
+    (@get model, $target:ty) => {
+        pub fn get(self, index: usize) -> ::core::option::Option<$target> {
+            self.0.get(index).and_then(<$target>::from_value)
+        }
+    };
+    (@descriptor scalar, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::Item,
+            target_model: ::core::option::Option::None,
+        }
+    };
+    (@descriptor model, $slot:expr, $target:ty) => {
+        $crate::archive::FieldDescriptor {
+            id: $slot,
+            relation: $crate::archive::FieldRelation::Item,
+            target_model: ::core::option::Option::Some(
+                &<$target as $crate::archive::ArchiveModel>::DESCRIPTOR,
+            ),
+        }
+    };
+}
+
+/// Define a typed immutable indexed-list view over archived validated data.
+#[macro_export]
+macro_rules! define_archive_indexed_list_view {
+    (
+        $(#[$attribute:meta])*
+        $visibility:vis struct $name:ident {
+            $kind:ident item ($slot:expr) -> $target:ty;
+            primary_key_fields: [$($primary_key_slot:expr),+ $(,)?];
+        }
+    ) => {
+        $(#[$attribute])*
+        $visibility struct $name<'a>($crate::archive::ListView<'a>);
+        impl<'a> $name<'a> {
+            pub fn from_value(value: $crate::archive::ValueView<'a>) -> ::core::option::Option<Self> {
+                value.as_list().map(Self)
+            }
+            pub fn len(self) -> usize { self.0.len() }
+            pub fn is_empty(self) -> bool { self.0.is_empty() }
+            $crate::define_archive_list_view!(@get $kind, $target);
+            pub fn get_by_primary_key(
+                self,
+                key: &[$crate::archive::PrimaryKeyValue<'_>],
+            ) -> ::core::option::Option<$crate::define_archive_indexed_list_view!(@type $kind, $target)> {
+                $crate::define_archive_indexed_list_view!(@lookup self, key, $kind, $target)
+            }
+        }
+        impl<'a> $crate::archive::ArchiveModel for $name<'a> {
+            const DESCRIPTOR: $crate::archive::ModelDescriptor = $crate::archive::ModelDescriptor {
+                fields: &[
+                    $crate::define_archive_list_view!(@descriptor $kind, $slot, $target),
+                ],
+                primary_key_fields: &[$($primary_key_slot),+],
+            };
+        }
+    };
+    (@type scalar, $target:ty) => { $crate::archive::ValueView<'a> };
+    (@type model, $target:ty) => { $target };
+    (@lookup $self:ident, $key:ident, scalar, $target:ty) => {
+        $self.0.get_by_primary_key($key)
+    };
+    (@lookup $self:ident, $key:ident, model, $target:ty) => {
+        $self.0.get_by_primary_key($key).and_then(<$target>::from_value)
+    };
 }
 
 /// Result of validation and conditional archive publication.
@@ -200,14 +390,12 @@ enum ValueNode {
     List {
         start: u32,
         len: u32,
-        model: u32,
         primary_key_start: u32,
         primary_key_len: u32,
     },
     Dict {
         start: u32,
         len: u32,
-        model: u32,
     },
 }
 
@@ -222,7 +410,6 @@ struct MapSlot {
 #[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 #[rkyv(derive(Debug))]
 struct SequenceSlot {
-    field_slot: Option<u32>,
     value: ValueId,
 }
 
@@ -289,7 +476,8 @@ impl Builder {
         value: &Value,
         schema_hash: [u8; 32],
     ) -> Result<ValidatedArchive, ArchiveError> {
-        let root = self.push_value(value, Some(self.registry.root_model))?;
+        let root_model = self.registry.root_model;
+        let root = self.push_value(value, Some(&root_model))?;
         Ok(ValidatedArchive {
             schema_hash,
             registry_hash: self.registry.hash,
@@ -304,7 +492,11 @@ impl Builder {
         })
     }
 
-    fn push_value(&mut self, value: &Value, model: Option<u32>) -> Result<ValueId, ArchiveError> {
+    fn push_value(
+        &mut self,
+        value: &Value,
+        model: Option<&ModelDescriptor>,
+    ) -> Result<ValueId, ArchiveError> {
         let id = ValueId(to_u32(self.values.len(), "value")?);
         self.values.push(ValueNode::Null);
         let node = match value {
@@ -327,23 +519,17 @@ impl Builder {
             }
             Value::String(value) => ValueNode::String(self.intern(value)?),
             Value::Array(items) => {
-                let parent = model.unwrap_or(u32::MAX);
-                let descriptor = self.registry.item(parent);
-                let primary_key = self.registry.primary_key(parent);
+                let descriptor = model.and_then(ModelDescriptor::item);
+                let primary_key_fields = model.map_or(&[][..], |model| model.primary_key_fields);
                 let mut slots = Vec::with_capacity(items.len());
                 let mut primary_keys = Vec::with_capacity(items.len());
                 for item in items {
                     let child =
                         self.push_value(item, descriptor.and_then(|field| field.target_model))?;
-                    slots.push(SequenceSlot {
-                        field_slot: descriptor.map(|field| field.id),
-                        value: child,
-                    });
-                    if let Some(primary_key) = primary_key {
-                        primary_keys.push((
-                            self.primary_key_parts(child, primary_key.field_slots)?,
-                            child,
-                        ));
+                    slots.push(SequenceSlot { value: child });
+                    if !primary_key_fields.is_empty() {
+                        primary_keys
+                            .push((self.primary_key_parts(child, primary_key_fields)?, child));
                     }
                 }
                 let start = to_u32(self.sequence_slots.len(), "sequence slot")?;
@@ -362,7 +548,6 @@ impl Builder {
                 ValueNode::List {
                     start,
                     len: to_u32(items.len(), "sequence length")?,
-                    model: parent,
                     primary_key_start,
                     primary_key_len: to_u32(self.primary_key_slots.len(), "primary key slot")?
                         .checked_sub(primary_key_start)
@@ -372,10 +557,9 @@ impl Builder {
                 }
             }
             Value::Object(items) => {
-                let parent = model.unwrap_or(u32::MAX);
                 let mut slots = Vec::with_capacity(items.len());
                 for (key, item) in items {
-                    let descriptor = self.registry.field(parent, key);
+                    let descriptor = model.and_then(|model| model.field(key));
                     let child =
                         self.push_value(item, descriptor.and_then(|field| field.target_model))?;
                     let key = self.intern(key)?;
@@ -390,7 +574,6 @@ impl Builder {
                 ValueNode::Dict {
                     start,
                     len: to_u32(items.len(), "map length")?,
-                    model: parent,
                 }
             }
         };
@@ -1096,48 +1279,50 @@ mod tests {
 
     use super::*;
 
-    const FIELDS: &[FieldDescriptor] = &[
+    const ITEM_FIELDS: &[FieldDescriptor] = &[
         FieldDescriptor {
             id: 0,
-            parent_model: 0,
+            relation: FieldRelation::Key("enabled"),
+            target_model: None,
+        },
+        FieldDescriptor {
+            id: 1,
+            relation: FieldRelation::Key("name"),
+            target_model: None,
+        },
+    ];
+    const ITEM_MODEL: ModelDescriptor = ModelDescriptor {
+        fields: ITEM_FIELDS,
+        primary_key_fields: &[],
+    };
+    const LIST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+        id: 0,
+        relation: FieldRelation::Item,
+        target_model: Some(&ITEM_MODEL),
+    }];
+    const LIST_MODEL: ModelDescriptor = ModelDescriptor {
+        fields: LIST_FIELDS,
+        primary_key_fields: &[1],
+    };
+    const ROOT_FIELDS: &[FieldDescriptor] = &[
+        FieldDescriptor {
+            id: 0,
             relation: FieldRelation::Key("name"),
             target_model: None,
         },
         FieldDescriptor {
             id: 1,
-            parent_model: 0,
             relation: FieldRelation::Key("items"),
-            target_model: Some(1),
-        },
-        FieldDescriptor {
-            id: 2,
-            parent_model: 1,
-            relation: FieldRelation::Item,
-            target_model: Some(2),
-        },
-        FieldDescriptor {
-            id: 3,
-            parent_model: 2,
-            relation: FieldRelation::Key("enabled"),
-            target_model: None,
-        },
-        FieldDescriptor {
-            id: 4,
-            parent_model: 2,
-            relation: FieldRelation::Key("name"),
-            target_model: None,
+            target_model: Some(&LIST_MODEL),
         },
     ];
-    const PRIMARY_KEY_FIELDS: &[u32] = &[4];
-    const PRIMARY_KEYS: &[PrimaryKeyDescriptor] = &[PrimaryKeyDescriptor {
-        model: 1,
-        field_slots: PRIMARY_KEY_FIELDS,
-    }];
+    const ROOT_MODEL: ModelDescriptor = ModelDescriptor {
+        fields: ROOT_FIELDS,
+        primary_key_fields: &[],
+    };
     const REGISTRY: ModelRegistry = ModelRegistry {
-        root_model: 0,
+        root_model: ROOT_MODEL,
         hash: [7; 32],
-        fields: FIELDS,
-        primary_keys: PRIMARY_KEYS,
     };
 
     fn schemas() -> Store {
@@ -1172,14 +1357,14 @@ mod tests {
             .and_then(ValueView::as_dict)
             .expect("indexed item");
         assert_eq!(
-            indexed_item.field(4).and_then(ValueView::as_str),
+            indexed_item.field(1).and_then(ValueView::as_str),
             Some("Ethernet1")
         );
         assert_eq!(
             items
                 .get(0)
                 .and_then(ValueView::as_dict)
-                .and_then(|item| item.field(3))
+                .and_then(|item| item.field(0))
                 .and_then(ValueView::as_bool),
             Some(true)
         );
@@ -1195,7 +1380,7 @@ mod tests {
             .expect("owned indexed item");
         assert_eq!(
             indexed_handle
-                .field(4)
+                .field(1)
                 .and_then(|value| value.as_str().map(str::to_owned)),
             Some("Ethernet1".to_owned())
         );

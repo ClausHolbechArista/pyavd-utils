@@ -2,11 +2,13 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Occurrence-specific model identities for generated typed views.
+//! Nominal model identities for generated typed views.
 //!
-//! Compiled schemas intern structural nodes. This build-time IR instead identifies each collection
-//! and relationship at its use-site, so generated APIs can retain nominal type identity without
-//! adding generation-only data to the runtime schema archive.
+//! Compiled schemas intern structural nodes. This build-time IR normally identifies collections
+//! and relationships at their use-sites, so generated APIs retain nominal type identity without
+//! adding generation-only data to the runtime schema archive. Generators may also provide complete
+//! model catalogs for referenced schemas. Pure cross-schema references then target those existing
+//! identities, matching the source model reuse without expanding their descendants again.
 
 use super::traversal::SchemaOccurrence;
 use super::traversal::SchemaRelation;
@@ -16,11 +18,16 @@ use super::traversal::TraversalControl;
 use crate::CompileError;
 use crate::StoreSource;
 use crate::compiled::SchemaId;
+use indexmap::IndexMap;
+use std::collections::{HashMap, HashSet};
 
 /// Stable model identifier within one generated registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ModelId(pub u32);
-/// Stable field or relationship identifier within one generated registry.
+/// Stable field identity within one generated registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct FieldId(pub u32);
+/// Relationship slot local to one containing model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct SlotId(pub u32);
 /// Collection shape represented by a nominal model.
@@ -62,8 +69,10 @@ pub enum FieldTarget {
 /// One dictionary field, dynamic field, or list-item relationship.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct NominalField {
-    /// Deterministic slot identifier.
-    pub id: SlotId,
+    /// Deterministic registry-wide field identity.
+    pub id: FieldId,
+    /// Runtime relationship slot local to the containing model.
+    pub slot: SlotId,
     /// Containing model.
     pub parent: ModelId,
     /// Relationship to the parent.
@@ -79,7 +88,7 @@ pub struct NominalField {
     /// Effective description.
     pub description: Option<String>,
 }
-/// One collection occurrence used by generated APIs.
+/// One collection model used by generated APIs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct NominalModel {
     /// Deterministic model identifier.
@@ -96,11 +105,13 @@ pub struct NominalModel {
     /// avoids making generated consumers depend on that restriction.
     pub primary_key_fields: Vec<String>,
 }
-/// Build-time nominal model registry for one schema root.
+/// Build-time nominal model registry for a primary root and any reusable schema catalogs.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct NominalModelIr {
     /// Root model.
     pub root: ModelId,
+    /// Generated schema roots, including reusable cross-schema model catalogs.
+    pub roots: IndexMap<String, ModelId>,
     /// Models in depth-first order.
     pub models: Vec<NominalModel>,
     /// Relationships in depth-first order.
@@ -114,10 +125,39 @@ pub fn build_nominal_model_ir(
     source: &StoreSource,
     schema_name: &str,
 ) -> Result<NominalModelIr, CompileError> {
-    let traverser = SchemaTraverser::compile(source, schema_name)?;
-    let mut builder = Builder::default();
-    traverser.traverse(&mut builder)?;
-    builder.finish()
+    build_nominal_model_ir_with_reused_schemas(source, schema_name, &[])
+}
+
+/// Build a nominal registry which reuses pure references to separately generated schemas.
+///
+/// Reusable schemas are traversed first and retain their own nominal identities. A pure
+/// cross-schema reference from the primary schema then targets the existing referenced model
+/// instead of expanding another copy of its descendants. Same-schema references and references
+/// carrying local schema changes remain occurrence-specific.
+pub fn build_nominal_model_ir_with_reused_schemas(
+    source: &StoreSource,
+    schema_name: &str,
+    reused_schema_names: &[String],
+) -> Result<NominalModelIr, CompileError> {
+    if reused_schema_names.iter().any(|name| name == schema_name) {
+        return Err(CompileError::Archive(format!(
+            "primary schema '{schema_name}' cannot also be a reused schema"
+        )));
+    }
+    if reused_schema_names.iter().collect::<HashSet<_>>().len() != reused_schema_names.len() {
+        return Err(CompileError::Archive(
+            "reused schema names must be unique".to_owned(),
+        ));
+    }
+    let mut builder = Builder::new(reused_schema_names);
+    let mut roots = IndexMap::new();
+    for reused_schema_name in reused_schema_names {
+        let root = builder.traverse(source, reused_schema_name, false)?;
+        roots.insert(reused_schema_name.clone(), root);
+    }
+    let root = builder.traverse(source, schema_name, true)?;
+    roots.insert(schema_name.to_owned(), root);
+    Ok(builder.finish(root, roots))
 }
 
 /// Serialize a nominal registry for an external artifact renderer.
@@ -130,11 +170,28 @@ pub fn nominal_model_ir_json(
         .map_err(|error| CompileError::Archive(error.to_string()))
 }
 
+/// Serialize a nominal registry with reusable cross-schema model catalogs.
+pub fn nominal_model_ir_with_reused_schemas_json(
+    source: &StoreSource,
+    schema_name: &str,
+    reused_schema_names: &[String],
+) -> Result<String, CompileError> {
+    let registry =
+        build_nominal_model_ir_with_reused_schemas(source, schema_name, reused_schema_names)?;
+    serde_json::to_string_pretty(&registry)
+        .map_err(|error| CompileError::Archive(error.to_string()))
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     models: Vec<NominalModel>,
     fields: Vec<NominalField>,
+    next_slots: HashMap<ModelId, u32>,
     parents: Vec<Option<ModelId>>,
+    models_by_path: HashMap<Vec<String>, ModelId>,
+    reused_schema_names: HashSet<String>,
+    current_schema_name: String,
+    reuse_references: bool,
 }
 
 impl SchemaVisitor for Builder {
@@ -155,7 +212,30 @@ impl SchemaVisitor for Builder {
             self.parents.push(parent);
             return Ok(TraversalControl::SkipChildren);
         }
-        let model = if let Some(kind) = model_kind(occurrence) {
+        let reused_model = self
+            .reuse_references
+            .then(|| {
+                reusable_model_reference(
+                    occurrence,
+                    &self.current_schema_name,
+                    &self.reused_schema_names,
+                )
+            })
+            .flatten()
+            .map(reference_path)
+            .transpose()?
+            .map(|path| {
+                self.models_by_path.get(&path).copied().ok_or_else(|| {
+                    CompileError::Archive(format!(
+                        "reusable schema model '{}' was not generated before use",
+                        path.join("/")
+                    ))
+                })
+            })
+            .transpose()?;
+        let model = if let Some(model) = reused_model {
+            Some(model)
+        } else if let Some(kind) = model_kind(occurrence) {
             let id = ModelId(u32::try_from(self.models.len()).map_err(|error| {
                 CompileError::Archive(format!("nominal model count exceeds u32: {error}"))
             })?);
@@ -166,6 +246,7 @@ impl SchemaVisitor for Builder {
                 schema_id: occurrence.schema_id(),
                 primary_key_fields: primary_key_fields(occurrence),
             });
+            self.models_by_path.insert(occurrence.path().to_vec(), id);
             Some(id)
         } else {
             None
@@ -182,10 +263,19 @@ impl SchemaVisitor for Builder {
                     )
                 })?)
             };
+            let next_slot = self.next_slots.entry(parent).or_default();
+            let slot = SlotId(*next_slot);
+            *next_slot = next_slot.checked_add(1).ok_or_else(|| {
+                CompileError::Archive(format!(
+                    "nominal model {} field count exceeds u32",
+                    parent.0
+                ))
+            })?;
             self.fields.push(NominalField {
-                id: SlotId(u32::try_from(self.fields.len()).map_err(|error| {
+                id: FieldId(u32::try_from(self.fields.len()).map_err(|error| {
                     CompileError::Archive(format!("nominal field count exceeds u32: {error}"))
                 })?),
+                slot,
                 parent,
                 relation,
                 target,
@@ -196,7 +286,11 @@ impl SchemaVisitor for Builder {
             });
         }
         self.parents.push(model.or(parent));
-        Ok(TraversalControl::Descend)
+        Ok(if reused_model.is_some() {
+            TraversalControl::SkipChildren
+        } else {
+            TraversalControl::Descend
+        })
     }
 
     fn leave(&mut self, _occurrence: &SchemaOccurrence<'_>) -> Result<(), Self::Error> {
@@ -206,18 +300,83 @@ impl SchemaVisitor for Builder {
 }
 
 impl Builder {
-    fn finish(self) -> Result<NominalModelIr, CompileError> {
-        let root = self.models.first().map(|model| model.id).ok_or_else(|| {
-            CompileError::Archive("typed view generation requires a collection root".to_owned())
-        })?;
+    fn new(reused_schema_names: &[String]) -> Self {
+        Self {
+            reused_schema_names: reused_schema_names.iter().cloned().collect(),
+            ..Self::default()
+        }
+    }
+
+    fn traverse(
+        &mut self,
+        source: &StoreSource,
+        schema_name: &str,
+        reuse_references: bool,
+    ) -> Result<ModelId, CompileError> {
+        schema_name.clone_into(&mut self.current_schema_name);
+        self.reuse_references = reuse_references;
+        let traverser = SchemaTraverser::compile(source, schema_name)?;
+        traverser.traverse(self)?;
+        self.models_by_path
+            .get(&vec![schema_name.to_owned()])
+            .copied()
+            .ok_or_else(|| {
+                CompileError::Archive(format!(
+                    "typed view generation requires collection root '{schema_name}'"
+                ))
+            })
+    }
+
+    fn finish(self, root: ModelId, roots: IndexMap<String, ModelId>) -> NominalModelIr {
         let registry_hash = registry_hash(root, &self.models, &self.fields);
-        Ok(NominalModelIr {
+        NominalModelIr {
             root,
+            roots,
             models: self.models,
             fields: self.fields,
             registry_hash,
-        })
+        }
     }
+}
+
+fn reusable_model_reference<'a>(
+    occurrence: &'a SchemaOccurrence<'a>,
+    current_schema_name: &str,
+    reused_schema_names: &HashSet<String>,
+) -> Option<&'a str> {
+    let reusable_collection = match occurrence.schema_id() {
+        SchemaId::Dict(_) => true,
+        SchemaId::List(_) => occurrence
+            .list()
+            .is_some_and(|list| list.primary_key.is_some() && !list.allow_duplicate_primary_key),
+        SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => false,
+    };
+    reusable_collection.then(|| {
+        occurrence
+            .pure_references()
+            .iter()
+            .copied()
+            .find(|reference| {
+                reference.split_once('#').is_some_and(|(schema_name, _)| {
+                    schema_name != current_schema_name && reused_schema_names.contains(schema_name)
+                }) && !reference.contains("/$defs/")
+            })
+    })?
+}
+
+fn reference_path(reference: &str) -> Result<Vec<String>, CompileError> {
+    let (schema_name, path) = reference.split_once('#').ok_or_else(|| {
+        CompileError::Archive(format!(
+            "reusable schema reference '{reference}' is invalid"
+        ))
+    })?;
+    let mut components = vec![schema_name.to_owned()];
+    components.extend(
+        path.split('/')
+            .filter(|component| !component.is_empty())
+            .map(ToOwned::to_owned),
+    );
+    Ok(components)
 }
 
 fn model_kind(value: &SchemaOccurrence<'_>) -> Option<ModelKind> {
@@ -277,6 +436,7 @@ fn registry_hash(root: ModelId, models: &[NominalModel], fields: &[NominalField]
     for field in fields {
         state.update(&field.id.0.to_le_bytes());
         state.update(&field.parent.0.to_le_bytes());
+        state.update(&field.slot.0.to_le_bytes());
         match &field.relation {
             FieldRelation::Key(key) => {
                 state.update(&[0]);
@@ -342,6 +502,18 @@ mod tests {
         assert_eq!(ir.models.len(), 3);
         assert_ne!(ir.models[1].id, ir.models[2].id);
         assert_eq!(ir.models[1].schema_id, ir.models[2].schema_id);
+        assert_eq!(
+            ir.fields
+                .iter()
+                .map(|field| (field.parent, field.slot))
+                .collect::<Vec<_>>(),
+            [
+                (ModelId(0), SlotId(0)),
+                (ModelId(1), SlotId(0)),
+                (ModelId(0), SlotId(1)),
+                (ModelId(2), SlotId(0)),
+            ]
+        );
         assert_ne!(ir.registry_hash, [0; 32]);
         let repeated = build_nominal_model_ir(&source, "root").expect("valid registry");
         assert_eq!(ir.registry_hash, repeated.registry_hash);
@@ -353,6 +525,23 @@ mod tests {
         let changed =
             build_nominal_model_ir(&changed_source, "root").expect("valid changed registry");
         assert_ne!(ir.registry_hash, changed.registry_hash);
+    }
+
+    #[test]
+    fn pure_cross_schema_references_reuse_generated_models() {
+        let source = StoreSource::from_json(
+            r#"{"external":{"type":"dict","keys":{"shared":{"type":"dict","keys":{"name":{"type":"str"}}}}},"root":{"type":"dict","keys":{"value":{"type":"dict","$ref":"external#/keys/shared"}}}}"#,
+        )
+        .expect("valid source");
+        let ir =
+            build_nominal_model_ir_with_reused_schemas(&source, "root", &["external".to_owned()])
+                .expect("valid registry");
+
+        assert_eq!(ir.models.len(), 3);
+        assert_eq!(ir.fields.len(), 3);
+        assert_eq!(ir.roots["external"], ModelId(0));
+        assert_eq!(ir.root, ModelId(2));
+        assert_eq!(ir.fields[2].target, FieldTarget::Model(ModelId(1)));
     }
 
     #[test]

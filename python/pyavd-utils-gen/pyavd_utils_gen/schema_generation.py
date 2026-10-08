@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def build_nominal_model_registry(source: Path, schema_name: str) -> dict[str, Any]:
-    """Build occurrence-specific model and field identities for typed artifact generation."""
-    return json.loads(_schema_generation.build_nominal_model_registry(source, schema_name))
+def build_nominal_model_registry(source: Path, schema_name: str, reused_schema_names: list[str] | None = None) -> dict[str, Any]:
+    """Build model and field identities, reusing pure refs to selected generated schemas."""
+    return json.loads(_schema_generation.build_nominal_model_registry(source, schema_name, reused_schema_names))
 
 
 generate_python_schema_models = _schema_generation.generate_python_schema_models
