@@ -83,7 +83,11 @@ pub struct SourceDict {
         schemars(with = "Option<std::collections::BTreeMap<MetaStaticSchemaKey, SourceSchema>>")
     )]
     pub keys: Option<OrderMap<String, SourceSchema>>,
+    /// Whether input keys absent from `keys` and resolved `dynamic_keys` are accepted.
+    /// Default is false.
     pub allow_other_keys: Option<bool>,
+    /// Whether required-key validation is disabled for descendants.
+    /// Default is false.
     pub relaxed_validation: Option<bool>,
     #[serde(flatten)]
     #[cfg_attr(feature = "metaschema", schemars(with = "Base<MetaObject>"))]

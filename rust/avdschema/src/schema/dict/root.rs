@@ -54,8 +54,10 @@ pub struct SourceRootDict {
     )]
     pub dynamic_keys: Option<OrderMap<String, SourceSchema>>,
     /// Whether input keys absent from `keys` and resolved `dynamic_keys` are accepted.
+    /// Default is false.
     pub allow_other_keys: Option<bool>,
     /// Whether required-key validation is disabled for descendants.
+    /// Default is false.
     pub relaxed_validation: Option<bool>,
     /// Identifier carried by the authored schema document.
     #[serde(rename = "$id")]

@@ -41,6 +41,7 @@ pub enum Format {
 #[serde(deny_unknown_fields)]
 pub struct SourceStr {
     /// Convert string value to lower case before performing validation
+    /// Default is false.
     pub convert_to_lower_case: Option<bool>,
     pub format: Option<Format>,
     pub max_length: Option<u64>,

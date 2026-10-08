@@ -34,6 +34,7 @@ pub struct SourceList {
     /// Set to True to allow duplicate `primary_key` values for a list of dicts.
     /// Useful when primary key is only used for triggering documentation.
     /// NOTE! Should only be used in `avd_design` inputs since we cannot merge on primary key if there are duplicate entries.
+    /// Default is false.
     pub allow_duplicate_primary_key: Option<bool>,
     #[serde(flatten)]
     pub base: Base<Vec<Value>>,

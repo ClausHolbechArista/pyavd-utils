@@ -40,6 +40,7 @@ where
     #[cfg_attr(feature = "metaschema", schemars(length(min = 1)))]
     pub description: Option<String>,
     /// Key is required
+    /// Default is false.
     pub required: Option<bool>,
     pub deprecation: Option<Deprecation>,
     #[serde(rename = "$ref")]
@@ -61,8 +62,10 @@ pub struct Deprecation {
     /// Relative path to new key
     pub new_key: Option<String>,
     /// Allow the deprecated key to be configured simultaneously with the new key
+    /// Default is false.
     pub allow_with_new_key: Option<bool>,
     /// Support for this key has been removed
+    /// Default is false.
     pub removed: Option<bool>,
     /// Version in which the key will be removed
     pub remove_in_version: Option<String>,

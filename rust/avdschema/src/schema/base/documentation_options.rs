@@ -36,5 +36,6 @@ pub struct DocumentationOptionsDict {
     pub table: Option<String>,
     /// Prevent keys of the dict from being displayed in the generated documentation.
     /// This is used for `structured_config` where we wish to avoid displaying the full `eos_config` schema everywhere.
+    /// Default is false.
     pub hide_keys: Option<bool>,
 }
