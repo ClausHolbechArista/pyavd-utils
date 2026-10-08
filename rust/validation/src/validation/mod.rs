@@ -17,11 +17,15 @@ use crate::validatable::ValidatableValue;
 
 pub(crate) fn invalid_type<T, V: ValidatableValue>(
     value: &V,
+    required: bool,
     ctx: &mut Context,
     state: &ValidationState,
     expected: Type,
 ) -> NodeValidation<T> {
-    if value.is_null() && !ctx.configuration.restrict_null_values {
+    let enforce_required = required
+        && !state.relaxed_validation
+        && !(ctx.configuration.ignore_required_keys_on_root_dict && state.path.len() < 2);
+    if value.is_null() && !ctx.configuration.restrict_null_values && !enforce_required {
         NodeValidation::Null
     } else {
         ctx.add_error_for(
