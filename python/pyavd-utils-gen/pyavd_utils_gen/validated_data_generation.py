@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Arista Networks, Inc.
 # Use of this source code is governed by the Apache License 2.0
 # that can be found in the LICENSE file.
-"""Generate nominal Rust views and matching Python type declarations."""
+"""Generate nominal Rust views, native Python binding catalogs, and Python type declarations."""
 
 from __future__ import annotations
 
@@ -81,7 +81,6 @@ def generate_validated_data_models(
     source: Path,
     schema_name: str,
     rust_destination: Path,
-    python_destination: Path,
     pyi_destination: Path,
     rust_root_name: str,
     python_root_name: str,
@@ -89,7 +88,7 @@ def generate_validated_data_models(
     reused_schemas: dict[str, tuple[str, str]] | None = None,
 ) -> None:
     """
-    Generate checked-in Rust views and Python declarations from one schema root.
+    Generate checked-in Rust views, native Python bindings, and Python typing declarations.
 
     Args:
         source: Combined source schema containing ``schema_name``.
@@ -97,7 +96,6 @@ def generate_validated_data_models(
         rust_destination: Destination for the Rust model registry root. Generated schema modules
             are written below a sibling directory with the same stem, replacing any previous
             generated module tree.
-        python_destination: Destination for the Python runtime view classes.
         pyi_destination: Destination for the corresponding Python declarations.
         rust_root_name: Public Rust name of the root model, using Rust naming conventions.
         python_root_name: Public Python name of the root model, using Python naming conventions.
@@ -118,10 +116,62 @@ def generate_validated_data_models(
     python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
     rust_root_names = {name: names[0] for name, names in reused_schemas.items()} | {schema_name: rust_root_name}
     names = _model_names(models, python_root_names)
-    _write_rust(rust_destination, _render_rust(registry, models, fields, rust_root_names))
     root_model = int(registry["root"])
-    python_destination.write_text(_render_python(models, fields, slots, names, rust_root_name, root_model), encoding="UTF-8")
+    rust_sources = _render_rust(registry, models, fields, rust_root_names)
+    rust_sources[()] += "\npub mod native;\n"
+    rust_sources[("native",)] = _render_native_catalog(models, fields, slots, names, root_model)
+    _write_rust(rust_destination, rust_sources)
     pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name, root_model), encoding="UTF-8")
+
+
+def _render_native_catalog(models: list[dict[str, Any]], fields: list[dict[str, Any]], slots: dict[int, int], names: dict[int, str], root_model: int) -> str:
+    """Emit native slot descriptors for the entire Python-visible graph, including keyed identities."""
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for field in fields:
+        by_parent.setdefault(int(field["parent"]), []).append(field)
+    by_id = {int(model["id"]): model for model in models}
+
+    def target(field: dict[str, Any]) -> str:
+        kind, value = _target(field)
+        if kind == "Scalar":
+            return "Target::Scalar"
+        if field["relaxed"]:
+            return "Target::Opaque"
+        return f"Target::Model({json.dumps(names[int(value)].removesuffix('View'))})"
+
+    output = ["use ::validated_data_py::Target;\n\n::validated_data_py::python_data_views! {\n    pub BINDINGS {\n"]
+    aliases = []
+    for model in _python_visible_models(models, by_parent, root_model):
+        model_id = int(model["id"])
+        name = json.dumps(names[model_id].removesuffix("View"))
+        model_fields = by_parent.get(model_id, [])
+        if model["kind"] == "Dict":
+            output.append(f"        {name} => dict {{\n")
+            field_names = _field_names(model_fields)
+            for field in model_fields:
+                if _relation(field)[0] == "Key":
+                    field_name = json.dumps(field_names[int(field["id"])])
+                    output.append(f"            {field_name}: {slots[int(field['id'])]} => {target(field)},\n")
+            output.append("        };\n")
+            continue
+        item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
+        item_target = target(item) if item is not None else "Target::Scalar"
+        keys = _primary_key_fields(model, by_id, by_parent)
+        if keys:
+            if item["relaxed"]:
+                msg = "Python primary-key list items cannot expose an opaque relaxed item body"
+                raise ValueError(msg)
+            contextual_name = json.dumps(_keyed_item_name(model, names))
+            item_target = f"Target::Model({contextual_name})"
+            aliases.append(f"        {contextual_name} => alias({json.dumps(names[int(_target(item)[1])].removesuffix('View'))});\n")
+        if model["indexed"]:
+            key_slots = ", ".join(str(slots[int(key["id"])]) for key in keys)
+            output.append(f"        {name} => indexed({item_target}, [{key_slots}]);\n")
+        else:
+            output.append(f"        {name} => list({item_target});\n")
+    output.extend(aliases)
+    output.append("    }\n}\n")
+    return "".join(output)
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
@@ -490,7 +540,7 @@ def _field_names(fields: list[dict[str, Any]]) -> dict[int, str]:
     occupied = set(bases.values())
     for field_id, base in bases.items():
         candidate = base if counts[base] == 1 else f"{base}_slot_{field_id}"
-        while candidate in names.values() or candidate != base and candidate in occupied:
+        while candidate in names.values() or (candidate != base and candidate in occupied):
             candidate += "_"
         names[field_id] = candidate
     return names
@@ -572,14 +622,6 @@ def _python_field_type(field: dict[str, Any], names: dict[int, str]) -> str:
     return " | ".join(parts)
 
 
-def _python_model_wrap(field: dict[str, Any], names: dict[int, str], value: str) -> str:
-    target_kind, target = _target(field)
-    if target_kind != "Model":
-        return value
-    target_name = "OpaqueData" if field["relaxed"] else names[int(target)].removesuffix("View")
-    return f"_wrap_model({value}, {target_name})"
-
-
 def _python_visible_models(models: list[dict[str, Any]], by_parent: dict[int, list[dict[str, Any]]], root_model: int) -> list[dict[str, Any]]:
     """Expose the strict root graph, stopping before opaque relaxed payloads."""
     visible = {root_model}
@@ -599,16 +641,13 @@ def _keyed_item_name(model: dict[str, Any], names: dict[int, str]) -> str:
     return f"{names[int(model['id'])].removesuffix('View')}{suffix}"
 
 
-def _python_keyed_items(
+def _render_keyed_item_stubs(
     models: list[dict[str, Any]],
     by_parent: dict[int, list[dict[str, Any]]],
     names: dict[int, str],
-    slots: dict[int, int],
     root_model: int,
-    *,
-    stub: bool,
 ) -> str:
-    """Emit contextual key accessors without changing the reused item model's contract."""
+    """Declare contextual key guarantees without changing the reusable item type's contract."""
     by_id = {int(model["id"]): model for model in models}
     output: list[str] = []
     for model in _python_visible_models(models, by_parent, root_model):
@@ -623,141 +662,8 @@ def _python_keyed_items(
         for key in primary_keys:
             name = _field_names(by_parent[int(_target(item)[1])])[int(key["id"])]
             output.append(f"    @property\n    def {name}(self) -> {_python_target_type(key, names)}:")
-            output.append(" ...\n" if stub else f"\n        return self._get_field({slots[int(key['id'])]})\n")
+            output.append(" ...\n")
         output.append("\n")
-    return "".join(output)
-
-
-def _render_python(
-    models: list[dict[str, Any]],
-    fields: list[dict[str, Any]],
-    slots: dict[int, int],
-    names: dict[int, str],
-    rust_root_name: str,
-    root_model: int,
-) -> str:
-    """Render Python model identities backed by generic PyO3 archive handles."""
-    by_parent: dict[int, list[dict[str, Any]]] = {}
-    for field in fields:
-        by_parent.setdefault(int(field["parent"]), []).append(field)
-    models_by_id = {int(model["id"]): model for model in models}
-    root_name = names[root_model].removesuffix("View")
-    open_name = f"open_{_rust_module_identifier(rust_root_name)}"
-    output = [
-        "# Copyright (c) 2026 Arista Networks, Inc.\n",
-        "# Generated from the AVD schema. Do not edit by hand.\n",
-        "# ruff: noqa: EM101, TC003, TRY003\n",
-        "from __future__ import annotations\n\n",
-        "from collections.abc import Iterator\n",
-        "from pathlib import Path\n",
-        "from typing import Any\n\n",
-        f"from pyavd._rust import OpaqueData, _DictView, _ListView, _ValueHandle, _{open_name}_handle\n",
-        "from pyavd._utils.undefined import Undefined, UndefinedType\n\n",
-        "def _wrap_model(value: Any, model: type[Any]) -> Any:\n",
-        "    return model(value) if isinstance(value, _ValueHandle) else value\n\n",
-    ]
-    for model in _python_visible_models(models, by_parent, root_model):
-        model_id = int(model["id"])
-        name = names[model_id].removesuffix("View")
-        model_fields = by_parent.get(model_id, [])
-        if model["kind"] == "Dict":
-            output.append(f"class {name}(_DictView):\n")
-            static_fields = [field for field in model_fields if _relation(field)[0] == "Key"]
-            if not static_fields:
-                output.append("    pass\n\n")
-                continue
-            for field in static_fields:
-                key = str(_relation(field)[1])
-                annotation = _python_field_type(field, names)
-                expression = _python_model_wrap(field, names, f"self._get_field({slots[int(field['id'])]})")
-                output.extend(
-                    [
-                        "    @property\n",
-                        f"    def {_field_names(model_fields)[int(field['id'])]}(self) -> {annotation}:\n",
-                        f"        return {expression}\n",
-                    ]
-                )
-            output.append("\n")
-            continue
-
-        item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
-        item_type = _python_target_type(item, names) if item is not None else "Any"
-        item_expression = _python_model_wrap(item, names, "self._get_item(index)") if item is not None else "self._get_item(index)"
-        primary_key_fields = _primary_key_fields(model, models_by_id, by_parent)
-        if primary_key_fields:
-            item_type = _keyed_item_name(model, names)
-            item_expression = f"_wrap_model(self._get_item(index), {item_type})"
-        returned_item_type = item_type if primary_key_fields or item is not None and item["required"] else f"{item_type} | None"
-        output.append(f"class {name}(_ListView):\n")
-        output.extend(
-            [
-                f"    def __iter__(self) -> Iterator[{returned_item_type}]:\n",
-                "        for index in range(len(self)):\n",
-                "            yield self._item_at(index)\n\n",
-                f"    def _item_at(self, index: int) -> {returned_item_type}:\n",
-            ]
-        )
-        if primary_key_fields:
-            output.extend(
-                [
-                    f"        value = {item_expression}\n",
-                    "        if value is None:\n",
-                    '            raise RuntimeError("primary-key list item is null")\n',
-                    "        return value\n",
-                ]
-            )
-        else:
-            output.append(f"        return {item_expression}\n")
-        if not model["indexed"]:
-            output.extend(
-                [
-                    f"    def __getitem__(self, index: int | slice) -> {returned_item_type} | list[{returned_item_type}]:\n",
-                    "        if isinstance(index, slice):\n",
-                    "            return [self._item_at(item_index) for item_index in range(*index.indices(len(self)))]\n",
-                    "        return self._item_at(index)\n\n",
-                ]
-            )
-            continue
-        if len(primary_key_fields) != 1:
-            msg = f"composite primary keys are not supported yet for model {model_id}"
-            raise ValueError(msg)
-        primary_key = primary_key_fields[0]
-        primary_key_name = str(_relation(primary_key)[1])
-        primary_key_accessor = _field_names(by_parent[int(_target(item)[1])])[int(primary_key["id"])]
-        primary_key_type = _python_target_type(primary_key, names)
-        if item is None:
-            msg = f"indexed-list model {model_id} has no item relationship"
-            raise ValueError(msg)
-        wrapped_lookup = f"_wrap_model(value, {item_type})"
-        output.extend(
-            [
-                f"    def __contains__(self, key: {primary_key_type}) -> bool:\n",
-                "        return self._contains_primary_key((key,))\n\n",
-                f"    def __getitem__(self, key: {primary_key_type}) -> {item_type}:\n",
-                "        value = self._get_by_primary_key((key,))\n",
-                "        if isinstance(value, UndefinedType):\n",
-                "            raise KeyError(key)\n",
-                f"        return {wrapped_lookup}\n\n",
-                f"    def get(self, key: {primary_key_type}, default: Any = Undefined) -> {item_type} | Any:\n",
-                "        value = self._get_by_primary_key((key,))\n",
-                "        if isinstance(value, UndefinedType):\n",
-                "            return default\n",
-                f"        return {wrapped_lookup}\n\n",
-                f"    def keys(self) -> Iterator[{primary_key_type}]:\n",
-                f"        return (item.{primary_key_accessor} for item in self)\n\n",
-                f"    def values(self) -> Iterator[{item_type}]:\n",
-                "        return iter(self)\n\n",
-                f"    def items(self) -> Iterator[tuple[{primary_key_type}, {item_type}]]:\n",
-                f"        return ((item.{primary_key_accessor}, item) for item in self)\n\n",
-            ]
-        )
-    output.append(_python_keyed_items(models, by_parent, names, slots, root_model, stub=False))
-    output.extend(
-        [
-            f"def {open_name}(archive: Path, schema_archive: Path) -> {root_name}:\n",
-            f"    return {root_name}(_{open_name}_handle(archive, schema_archive))\n",
-        ]
-    )
     return "".join(output)
 
 
@@ -801,7 +707,7 @@ def _render_pyi(
         primary_key_fields = _primary_key_fields(model, models_by_id, by_parent)
         if primary_key_fields:
             base_item_type = _keyed_item_name(model, names)
-        item_type = base_item_type if primary_key_fields or item is not None and item["required"] else f"{base_item_type} | None"
+        item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
         body = [f"class {name}(Sequence[{item_type}]):\n", f"    def __iter__(self) -> Iterator[{item_type}]: ...\n"]
         if not model["indexed"]:
             body.extend(
@@ -834,8 +740,7 @@ def _render_pyi(
             ]
         )
         definitions.append("".join(body).rstrip())
-    slots = {int(field["id"]): int(field["slot"]) for field in fields}
-    definitions.append(_python_keyed_items(models, by_parent, names, slots, root_model, stub=True).rstrip())
+    definitions.append(_render_keyed_item_stubs(models, by_parent, names, root_model).rstrip())
     output = ["".join(header), "\n\n".join(definitions)]
     root_name = names[root_model].removesuffix("View")
     output.extend(

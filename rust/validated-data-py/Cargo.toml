@@ -1,0 +1,16 @@
+[package]
+name = "validated-data-py"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pyo3.workspace = true
+validated-data = { path = "../validated-data" }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.23.0"
