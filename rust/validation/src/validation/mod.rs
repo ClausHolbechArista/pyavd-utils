@@ -50,7 +50,7 @@ pub(crate) fn invalid_type<T, V: ValidatableValue>(
 pub(crate) enum NodeValidation<T> {
     /// The node has the expected type and may be traversed through this view.
     Valid(T),
-    /// Null is accepted because `restrict_null_values` is disabled.
+    /// Null is accepted because `restrict_null_values` is disabled and requiredness is not enforced.
     Null,
     /// The node is invalid and the relevant diagnostic has already been added.
     Invalid,
