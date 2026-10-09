@@ -227,6 +227,40 @@ mod tests {
         );
     }
 
+    /// The root-key exemption does not exempt the root dictionary itself.
+    #[test]
+    fn root_exemption_does_not_exempt_required_null_root_dict() {
+        let store = compile(json!({"test": {"type": "dict", "required": true, "keys": {}}}));
+        let configuration = Configuration {
+            ignore_required_keys_on_root_dict: true,
+            ..Default::default()
+        };
+        let json = store
+            .validate_json("null", "test", Some(&configuration))
+            .expect("valid JSON input should be accepted by the adapter");
+        let yaml = store
+            .validate_yaml("null", "test", Some(&configuration))
+            .expect("valid YAML input should be accepted by the adapter");
+        assert!(json.input_diagnostics.is_empty());
+        assert!(yaml.input_diagnostics.is_empty());
+        assert_eq!(yaml.documents.len(), 1);
+        for result in [&json.document.result, &yaml.documents[0].result] {
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(
+                Vec::<String>::from(result.errors[0].path.clone()),
+                Vec::<String>::new()
+            );
+            assert_eq!(
+                result.errors[0].issue,
+                Violation::InvalidType {
+                    expected: Type::Dict,
+                    found: Type::Null,
+                }
+                .into()
+            );
+        }
+    }
+
     #[test]
     fn restrict_null_values_takes_precedence_over_root_exemption() {
         check_root(
