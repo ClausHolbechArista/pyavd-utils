@@ -1454,15 +1454,15 @@ mod tests {
     fn invalid_primary_key_target_diagnostics_are_precise() {
         let cases = [
             (
-                r#"{"root":{"type":"list","primary_key":"name","items":{"type":"str"}}}"#,
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"str"}}}}}"#,
                 PrimaryKeyError::ItemsNotDict { found: "str" },
             ),
             (
-                r#"{"root":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"other":{"type":"str"}}}}}"#,
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"other":{"type":"str"}}}}}}}"#,
                 PrimaryKeyError::MissingField,
             ),
             (
-                r#"{"root":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"name":{"type":"dict"}}}}}"#,
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"name":{"type":"dict"}}}}}}}"#,
                 PrimaryKeyError::FieldNotScalar { found: "dict" },
             ),
         ];

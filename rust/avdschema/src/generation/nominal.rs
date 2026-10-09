@@ -10,6 +10,11 @@
 //! model catalogs for referenced schemas. Pure cross-schema references then target those existing
 //! identities, matching the source model reuse without expanding their descendants again.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+
+use indexmap::IndexMap;
+
 use super::traversal::SchemaOccurrence;
 use super::traversal::SchemaRelation;
 use super::traversal::SchemaTraverser;
@@ -18,8 +23,6 @@ use super::traversal::TraversalControl;
 use crate::CompileError;
 use crate::StoreSource;
 use crate::compiled::SchemaId;
-use indexmap::IndexMap;
-use std::collections::{HashMap, HashSet};
 
 /// Stable model identifier within one generated registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]

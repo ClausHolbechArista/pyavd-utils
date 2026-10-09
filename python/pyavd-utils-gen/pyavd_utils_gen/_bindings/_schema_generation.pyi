@@ -20,7 +20,8 @@ def generate_schema_documentation_from_paths(sources: Mapping[str, Path], schema
     Output names may contain lowercase ASCII letters, digits, underscores, hyphens,
     and dots. Invalid names raise ValueError before directory creation, cleanup, or writes.
     """
-def build_nominal_model_registry(source: Path, schema_name: str) -> str:
+
+def build_nominal_model_registry(source: Path, schema_name: str, reused_schema_names: list[str] | None = None) -> str:
     """Return the occurrence-specific nominal model registry as JSON."""
 
 def generate_python_schema_models(
