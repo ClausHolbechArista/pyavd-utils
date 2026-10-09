@@ -25,6 +25,7 @@ impl DataValue for Vec<Value> {}
 /// Schema properties shared by all schema types.
 #[skip_serializing_none]
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metaschema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Base<T>
 where
@@ -33,19 +34,27 @@ where
     /// Default value
     pub default: Option<T>,
     /// Free text display name for forms and documentation (single line)
+    #[cfg_attr(feature = "metaschema", schemars(regex(pattern = r"^[^\n]+$")))]
     pub display_name: Option<String>,
     /// Free text description for forms and documentation (multi line)
+    #[cfg_attr(feature = "metaschema", schemars(length(min = 1)))]
     pub description: Option<String>,
     /// Key is required
+    /// Default is false.
     pub required: Option<bool>,
     pub deprecation: Option<Deprecation>,
     #[serde(rename = "$ref")]
+    #[cfg_attr(
+        feature = "metaschema",
+        schemars(regex(pattern = r"^[a-z][a-z_]*#(/[a-z$][\.a-z0-9_]*)*$"))
+    )]
     pub schema_ref: Option<String>,
 }
 
 /// Deprecation settings
 #[skip_serializing_none]
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metaschema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Deprecation {
     /// Emit deprecation warning if key is set
@@ -53,8 +62,10 @@ pub struct Deprecation {
     /// Relative path to new key
     pub new_key: Option<String>,
     /// Allow the deprecated key to be configured simultaneously with the new key
+    /// Default is false.
     pub allow_with_new_key: Option<bool>,
     /// Support for this key has been removed
+    /// Default is false.
     pub removed: Option<bool>,
     /// Version in which the key will be removed
     pub remove_in_version: Option<String>,

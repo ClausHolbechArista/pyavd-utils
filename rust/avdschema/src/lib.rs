@@ -55,6 +55,8 @@ mod generation;
     reason = "Legacy schema inheritance API predates missing-doc enforcement."
 )]
 mod inherit;
+#[cfg(feature = "metaschema")]
+mod metaschema;
 mod navigation;
 #[allow(
     missing_docs,
@@ -94,6 +96,8 @@ pub use self::generation::generate_python_models;
 #[cfg(feature = "generation")]
 pub use self::generation::generate_python_models_projection;
 pub use self::inherit::Inherit;
+#[cfg(feature = "metaschema")]
+pub use self::metaschema::generate_metaschema_json;
 pub use self::navigation::SchemaInfo;
 pub use self::navigation::SchemaPathError;
 pub use self::navigation::resolve_dynamic_keys;
