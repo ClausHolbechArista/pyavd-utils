@@ -15,21 +15,82 @@ use serde_with::skip_serializing_none;
 
 use super::any::SourceSchema;
 use super::base::Base;
+#[cfg(feature = "metaschema")]
+use super::base::DataValue;
 use super::base::documentation_options::DocumentationOptionsDict;
+
+/// Schema-only replacement for `OrderMap<String, Value>`, which cannot implement
+/// `JsonSchema` because both the trait and type are external.
+#[cfg(feature = "metaschema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(
+    dead_code,
+    reason = "This type only supplies the JSON Schema representation for OrderMap"
+)]
+struct MetaObject(std::collections::BTreeMap<String, Value>);
+
+#[cfg(feature = "metaschema")]
+impl DataValue for MetaObject {}
+
+/// Schema-only key type for statically named schema keys.
+///
+/// Static keys use snake case. The two explicitly named exceptions are deprecated keys retained
+/// in supported AVD schemas for backwards compatibility.
+#[cfg(feature = "metaschema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(
+    dead_code,
+    reason = "This type supplies the property-name pattern for the generated metaschema"
+)]
+struct MetaStaticSchemaKey(
+    #[schemars(regex(pattern = "^(?:[a-z][a-z0-9_]*|MIB_family_name|Vxlan1)$"))] String,
+);
+
+/// Schema-only key type for reusable schema definitions.
+#[cfg(feature = "metaschema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(
+    dead_code,
+    reason = "This type supplies the property-name pattern for the generated metaschema"
+)]
+struct MetaDefinitionKey(#[schemars(regex(pattern = "^[a-z][a-z0-9_]*$"))] String);
+
+/// Schema-only key type for data paths declaring dynamic schema keys.
+#[cfg(feature = "metaschema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(
+    dead_code,
+    reason = "This type supplies the property-name pattern for the generated metaschema"
+)]
+struct MetaDynamicSchemaKey(#[schemars(regex(pattern = "^[a-z][a-z0-9_.]*$"))] String);
 
 /// Source model for a recursive AVD dictionary schema.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "metaschema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SourceDict {
     /// Dictionary of recursive dictionary keys in the format `{<keyname>: {<schema>}}`.
     ///
     /// `keyname` must use snake case. `schema` is recursive and must conform
     /// to the AVD schema format.
+    #[cfg_attr(
+        feature = "metaschema",
+        schemars(with = "Option<std::collections::BTreeMap<MetaStaticSchemaKey, SourceSchema>>")
+    )]
     pub keys: Option<OrderMap<String, SourceSchema>>,
+    /// Whether input keys absent from `keys` and resolved `dynamic_keys` are accepted.
+    /// Default is false.
     pub allow_other_keys: Option<bool>,
+    /// Whether required-key validation is disabled for descendants.
+    /// Default is false.
     pub relaxed_validation: Option<bool>,
     #[serde(flatten)]
+    #[cfg_attr(feature = "metaschema", schemars(with = "Base<MetaObject>"))]
     pub base: Base<OrderMap<String, Value>>,
     pub documentation_options: Option<DocumentationOptionsDict>,
 }

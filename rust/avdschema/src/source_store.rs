@@ -261,4 +261,27 @@ mod tests {
             Some(1)
         );
     }
+
+    #[test]
+    fn source_store_accepts_null_for_historical_optional_fields() {
+        let store = StoreSource::from_json(
+            r#"{
+                "test": {
+                    "type": "dict",
+                    "description": null,
+                    "required": null,
+                    "keys": {"value": {"type": "str", "default": null}}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let root = store.get("test").unwrap();
+        assert!(root.base.description.is_none());
+        assert!(root.base.required.is_none());
+        assert!(matches!(
+            root.keys.as_ref().and_then(|keys| keys.get("value")),
+            Some(crate::any::SourceSchema::Str(value)) if value.base.default.is_none()
+        ));
+    }
 }
