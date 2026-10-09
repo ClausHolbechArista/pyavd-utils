@@ -88,6 +88,11 @@ pub struct NominalField {
     pub required: bool,
     /// Whether the effective schema supplies a default.
     pub has_default: bool,
+    /// Whether validation becomes relaxed inside this dictionary relationship.
+    ///
+    /// The containing model's mode controls presence of this field. Reusable target models
+    /// receive their mode from the relationship, rather than storing an occurrence-specific mode.
+    pub relaxed: bool,
     /// Effective description.
     pub description: Option<String>,
 }
@@ -102,11 +107,15 @@ pub struct NominalModel {
     pub path: Vec<String>,
     /// Compiled structural node represented by this occurrence.
     pub schema_id: SchemaId,
-    /// Ordered primary-key field names for an indexed list.
+    /// Ordered primary-key field names whose presence is guaranteed on list items.
     ///
     /// The current source schema supports one field. Keeping the nominal contract component-based
     /// avoids making generated consumers depend on that restriction.
     pub primary_key_fields: Vec<String>,
+    /// Whether keys are unique and the list exposes primary-key lookup.
+    ///
+    /// Duplicate-key lists retain key-presence guarantees but expose positional sequence access.
+    pub indexed: bool,
 }
 /// Build-time nominal model registry for a primary root and any reusable schema catalogs.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -248,6 +257,9 @@ impl SchemaVisitor for Builder {
                 path: occurrence.path().to_vec(),
                 schema_id: occurrence.schema_id(),
                 primary_key_fields: primary_key_fields(occurrence),
+                indexed: occurrence.list().is_some_and(|list| {
+                    list.primary_key.is_some() && !list.allow_duplicate_primary_key
+                }),
             });
             self.models_by_path.insert(occurrence.path().to_vec(), id);
             Some(id)
@@ -285,6 +297,9 @@ impl SchemaVisitor for Builder {
                 schema_id: occurrence.schema_id(),
                 required: occurrence.common().required,
                 has_default: occurrence.common().default.is_some(),
+                relaxed: occurrence
+                    .dict()
+                    .is_some_and(|dict| dict.begin_relaxed_validation),
                 description: occurrence.common().description.clone(),
             });
         }
@@ -392,7 +407,6 @@ fn model_kind(value: &SchemaOccurrence<'_>) -> Option<ModelKind> {
 fn primary_key_fields(value: &SchemaOccurrence<'_>) -> Vec<String> {
     value
         .list()
-        .filter(|list| !list.allow_duplicate_primary_key)
         .and_then(|list| list.primary_key.as_deref())
         .map(|primary_key| vec![primary_key.to_owned()])
         .unwrap_or_default()
@@ -423,6 +437,7 @@ fn registry_hash(root: ModelId, models: &[NominalModel], fields: &[NominalField]
             ModelKind::List => 1,
         }]);
         hash_schema_id(&mut state, model.schema_id);
+        state.update(&[u8::from(model.indexed)]);
         for part in &model.path {
             hash_string(&mut state, part);
         }
@@ -469,7 +484,11 @@ fn registry_hash(root: ModelId, models: &[NominalModel], fields: &[NominalField]
             }
         }
         hash_schema_id(&mut state, field.schema_id);
-        state.update(&[u8::from(field.required), u8::from(field.has_default)]);
+        state.update(&[
+            u8::from(field.required),
+            u8::from(field.has_default),
+            u8::from(field.relaxed),
+        ]);
     }
     *state.finalize().as_bytes()
 }
@@ -556,6 +575,39 @@ mod tests {
         let ir = build_nominal_model_ir(&source, "root").expect("valid registry");
 
         assert_eq!(ir.models[1].primary_key_fields, ["name"]);
-        assert!(ir.models[3].primary_key_fields.is_empty());
+        assert_eq!(ir.models[3].primary_key_fields, ["name"]);
+        assert!(ir.models[1].indexed);
+        assert!(!ir.models[3].indexed);
+    }
+
+    #[test]
+    fn reused_model_modes_belong_to_relationships() {
+        let source = StoreSource::from_json(
+            r#"{"external":{"type":"dict","keys":{"shared":{"type":"dict","keys":{"name":{"type":"str","required":true}}}}},"root":{"type":"dict","keys":{"strict":{"type":"dict","$ref":"external#/keys/shared"},"relaxed":{"type":"dict","$ref":"external#/keys/shared","relaxed_validation":true}}}}"#,
+        ).expect("valid source");
+        let ir =
+            build_nominal_model_ir_with_reused_schemas(&source, "root", &["external".to_owned()])
+                .expect("valid registry");
+        let strict = ir
+            .fields
+            .iter()
+            .find(|field| field.relation == FieldRelation::Key("strict".to_owned()))
+            .expect("strict relationship");
+        let relaxed = ir
+            .fields
+            .iter()
+            .find(|field| field.relation == FieldRelation::Key("relaxed".to_owned()))
+            .expect("relaxed relationship");
+        assert_eq!(strict.target, relaxed.target);
+        assert!(!strict.relaxed);
+        assert!(relaxed.relaxed);
+        let mut changed_fields = ir.fields.clone();
+        for field in &mut changed_fields {
+            field.relaxed = false;
+        }
+        assert_ne!(
+            ir.registry_hash,
+            registry_hash(ir.root, &ir.models, &changed_fields)
+        );
     }
 }

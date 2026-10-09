@@ -2385,19 +2385,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "validated-data"
+version = "0.0.10"
+dependencies = [
+ "avdschema",
+ "derive_more",
+ "mmap-guard",
+ "rkyv",
+ "self_cell",
+ "serde_json",
+ "tempfile",
+ "validated-data-macros",
+]
+
+[[package]]
+name = "validated-data-macros"
+version = "0.0.10"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "validation"
 version = "0.0.10"
 dependencies = [
  "avdschema",
  "derive_more",
  "log",
- "mmap-guard",
  "ordermap",
- "rkyv",
- "self_cell",
  "serde",
  "serde_json",
  "tempfile",
+ "validated-data",
  "yaml-parser",
 ]
 
