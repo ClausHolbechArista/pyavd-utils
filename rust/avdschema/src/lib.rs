@@ -87,8 +87,6 @@ pub use self::compiled::SchemaId;
 #[cfg(feature = "generation")]
 pub use self::generation::DocumentationGenerationError;
 #[cfg(feature = "generation")]
-pub use self::generation::generate_markdown_documentation;
-#[cfg(feature = "generation")]
 pub use self::generation::FieldId;
 #[cfg(feature = "generation")]
 pub use self::generation::FieldRelation;
@@ -114,6 +112,8 @@ pub use self::generation::SlotId;
 pub use self::generation::build_nominal_model_ir;
 #[cfg(feature = "generation")]
 pub use self::generation::build_nominal_model_ir_with_reused_schemas;
+#[cfg(feature = "generation")]
+pub use self::generation::generate_markdown_documentation;
 #[cfg(feature = "generation")]
 pub use self::generation::generate_python_models;
 #[cfg(feature = "generation")]
