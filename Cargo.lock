@@ -2408,6 +2408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "validated-data-py"
+version = "0.0.10"
+dependencies = [
+ "pyo3",
+ "serde_json",
+ "tempfile",
+ "validated-data",
+]
+
+[[package]]
 name = "validation"
 version = "0.0.10"
 dependencies = [
