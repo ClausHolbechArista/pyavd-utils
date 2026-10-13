@@ -41,21 +41,21 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     )
 
     rust_source = _combined_rust_source(rust)
-    native_source = (rust.with_suffix("") / "native.rs").read_text(encoding="UTF-8")
+    assert not (rust.with_suffix("") / "native.rs").exists()
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert (rust.with_suffix("") / "schema_generation_fixture.rs").is_file()
     assert (rust.with_suffix("") / "schema_generation_fixture" / "interface_profiles.rs").is_file()
     assert "pub const REGISTRY: ::validated_data::ModelRegistry" in rust_source
     assert "pub mod schema_generation_fixture;" in rust_source
-    assert "#[::validated_data::data_view(indexed_list, primary_key(name))]" in rust_source
+    assert "data_view(indexed_list, primary_key(name), python(" in rust_source
     assert "#[derive(Clone, Copy, Debug)]" not in rust_source
     assert "pub struct InterfaceProfiles<'a, Mode>" in rust_source
     assert "pub mod interface_profiles;" in rust_source
     assert "pub struct Item<'a, Mode>" in rust_source
     assert "pub interface_profiles: ::validated_data::Field<" in rust_source
     assert "primary_key(name)" in rust_source
-    assert '"SchemaGenerationFixture" => dict {' in native_source
-    assert '"SchemaGenerationFixtureInterfaceProfilesList" => indexed(' in native_source
+    assert 'python(name = "SchemaGenerationFixture")' in rust_source
+    assert 'python(name = "SchemaGenerationFixtureInterfaceProfilesList", item_name = "SchemaGenerationFixtureInterfaceProfilesListIndexedItem")' in rust_source
     assert "def __getitem__(self, key: str)" in pyi_source
     assert "class SchemaGenerationFixture:" in pyi_source
     assert "class StrValue:" not in pyi_source
@@ -111,7 +111,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     assert "def authentication(" not in projected_pyi_source
     assert projected_source != full_source
     assert _rust_sources(projected_rust) == _rust_sources(reordered_rust)
-    assert (projected_rust.with_suffix("") / "native.rs").read_bytes() == (reordered_rust.with_suffix("") / "native.rs").read_bytes()
+    assert not (projected_rust.with_suffix("") / "native.rs").exists()
     assert projected_pyi_source == reordered_pyi.read_text(encoding="UTF-8")
 
     full_accounting = next(line for line in full_source.splitlines() if "pub accounting: ::validated_data::Field<" in line)
@@ -149,13 +149,12 @@ def test_generate_validated_data_models_reuses_pure_cross_schema_references(tmp_
     )
 
     rust_source = _combined_rust_source(rust)
-    native_source = (rust.with_suffix("") / "native.rs").read_text(encoding="UTF-8")
     assert "pub mod external;" in rust_source
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
     assert "super::external::Shared<'a, Mode>" in rust_source
-    assert '"ExternalShared" => dict {' in native_source
-    assert '"RootValue" => dict {' not in native_source
-    assert 'Target::Model("ExternalShared")' in native_source
+    assert 'python(name = "ExternalShared")' in rust_source
+    assert 'python(name = "RootValue")' not in rust_source
+    assert rust_source.count('python(name = "ExternalShared")') == 1
     assert "def open_root(archive: Path, schema_archive: Path) -> Root:" in pyi.read_text(encoding="UTF-8")
 
 
@@ -293,7 +292,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     rust, pyi = (tmp_path / name for name in ("models.rs", "models.pyi"))
     generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"shared": ("Shared", "Shared")})
     rust_source = _combined_rust_source(rust)
-    assert "#[::validated_data::data_view(list, primary_key(name))]" in rust_source
+    assert "data_view(list, primary_key(name), python(" in rust_source
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
     assert "pub name: ::validated_data::Field<&'a str>" in rust_source
     pyi_source = pyi.read_text(encoding="UTF-8")
@@ -307,10 +306,9 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert name_property.returns.id == "str"
     sequence_methods = {node.name for node in classes["FixtureDuplicatesList"].body if isinstance(node, ast.FunctionDef)}
     assert sequence_methods == {"__iter__", "__getitem__"}
-    native_source = (rust.with_suffix("") / "native.rs").read_text(encoding="UTF-8")
-    assert '"FixtureDuplicatesList" => list(Target::Model("FixtureDuplicatesListKeyedItem"));' in native_source
-    assert '"FixtureDuplicatesListKeyedItem" => alias("Shared");' in native_source
-    assert '"FixtureDuplicatesList" => indexed(' not in native_source
+    assert 'python(name = "FixtureDuplicatesList", item_name = "FixtureDuplicatesListKeyedItem")' in rust_source
+    assert 'python(name = "Shared")' in rust_source
+    assert "indexed_list" not in rust_source
 
 
 def test_generate_validated_data_models_uses_language_specific_root_names(tmp_path: Path) -> None:
@@ -362,11 +360,9 @@ def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_p
     generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = _combined_rust_source(rust)
-    native_source = (rust.with_suffix("") / "native.rs").read_text(encoding="UTF-8")
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "primary_key_fields:" not in rust_source
     assert "historic_values" not in rust_source
-    assert "historic_values" not in native_source
     assert "historic_values" not in pyi_source
 
 
@@ -398,4 +394,5 @@ def test_generate_validated_data_models_keeps_dynamic_model_descriptors(tmp_path
     assert '#[data_view(dynamic = "selectors.names")]' in rust_source
     assert "pub selectors_names: ::validated_data::Field<DynamicSlot0<'a, Mode>>" in rust_source
     assert "pub struct DynamicSlot0" in rust_source
-    assert '"selectors_names"' not in (rust.with_suffix("") / "native.rs").read_text(encoding="UTF-8")
+    assert 'python(name = "FixtureSelectorsNames' not in rust_source
+    assert not (rust.with_suffix("") / "native.rs").exists()

@@ -71,3 +71,52 @@ fn duplicate_key_lists_expose_positions_but_not_unique_lookup() {
     );
     assert!(expand(quote!(list, primary_key(name)), &raw).is_err());
 }
+
+#[test]
+fn python_metadata_is_opt_in_and_reuses_field_descriptors() {
+    let dictionary = parse_quote!(
+        struct Item<'a, Mode> {
+            #[data_view(rename = "type")]
+            field_type: Field<&'a str>,
+        }
+    );
+    let plain = expand(quote!(), &dictionary)
+        .expect("Rust-only view")
+        .to_string();
+    assert!(!plain.contains("validated_data_py"));
+    let bound = expand(quote!(python(name = "Item")), &dictionary)
+        .expect("Python-exposed view")
+        .to_string();
+    assert!(bound.contains("PythonModel"));
+    assert!(bound.contains("DESCRIPTOR . fields"));
+    assert!(bound.contains("field_type"));
+    assert!(expand(quote!(python(item_name = "Item")), &dictionary).is_err());
+    assert!(
+        expand(
+            quote!(python(name = "Item", item_name = "KeyedItem")),
+            &dictionary
+        )
+        .is_err()
+    );
+    let list = parse_quote!(
+        struct Items<'a, Mode>(Field<Item<'a, Mode>>);
+    );
+    assert!(
+        expand(
+            quote!(list, primary_key(name), python(name = "Items")),
+            &list
+        )
+        .is_err()
+    );
+    assert!(
+        expand(
+            quote!(
+                list,
+                primary_key(name),
+                python(name = "Items", item_name = "KeyedItem")
+            ),
+            &list
+        )
+        .is_ok()
+    );
+}

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Arista Networks, Inc.
 # Use of this source code is governed by the Apache License 2.0
 # that can be found in the LICENSE file.
-"""Generate nominal Rust views, native Python binding catalogs, and Python type declarations."""
+"""Generate typed Rust views with native Python binding annotations and Python typing stubs."""
 
 from __future__ import annotations
 
@@ -110,68 +110,15 @@ def generate_validated_data_models(
     registry = build_nominal_model_registry(source, schema_name, list(reused_schemas))
     if root_keys is not None:
         registry = _project_registry(registry, root_keys)
-    slots = {int(field["id"]): int(field["slot"]) for field in registry["fields"]}
     models = list(registry["models"])
     fields = list(registry["fields"])
     python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
     rust_root_names = {name: names[0] for name, names in reused_schemas.items()} | {schema_name: rust_root_name}
     names = _model_names(models, python_root_names)
     root_model = int(registry["root"])
-    rust_sources = _render_rust(registry, models, fields, rust_root_names)
-    rust_sources[()] += "\npub mod native;\n"
-    rust_sources[("native",)] = _render_native_catalog(models, fields, slots, names, root_model)
+    rust_sources = _render_rust(registry, models, fields, rust_root_names, names)
     _write_rust(rust_destination, rust_sources)
     pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name, root_model), encoding="UTF-8")
-
-
-def _render_native_catalog(models: list[dict[str, Any]], fields: list[dict[str, Any]], slots: dict[int, int], names: dict[int, str], root_model: int) -> str:
-    """Emit native slot descriptors for the entire Python-visible graph, including keyed identities."""
-    by_parent: dict[int, list[dict[str, Any]]] = {}
-    for field in fields:
-        by_parent.setdefault(int(field["parent"]), []).append(field)
-    by_id = {int(model["id"]): model for model in models}
-
-    def target(field: dict[str, Any]) -> str:
-        kind, value = _target(field)
-        if kind == "Scalar":
-            return "Target::Scalar"
-        if field["relaxed"]:
-            return "Target::Opaque"
-        return f"Target::Model({json.dumps(names[int(value)].removesuffix('View'))})"
-
-    output = ["use ::validated_data_py::Target;\n\n::validated_data_py::python_data_views! {\n    pub BINDINGS {\n"]
-    aliases = []
-    for model in _python_visible_models(models, by_parent, root_model):
-        model_id = int(model["id"])
-        name = json.dumps(names[model_id].removesuffix("View"))
-        model_fields = by_parent.get(model_id, [])
-        if model["kind"] == "Dict":
-            output.append(f"        {name} => dict {{\n")
-            field_names = _field_names(model_fields)
-            for field in model_fields:
-                if _relation(field)[0] == "Key":
-                    field_name = json.dumps(field_names[int(field["id"])])
-                    output.append(f"            {field_name}: {slots[int(field['id'])]} => {target(field)},\n")
-            output.append("        };\n")
-            continue
-        item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
-        item_target = target(item) if item is not None else "Target::Scalar"
-        keys = _primary_key_fields(model, by_id, by_parent)
-        if keys:
-            if item["relaxed"]:
-                msg = "Python primary-key list items cannot expose an opaque relaxed item body"
-                raise ValueError(msg)
-            contextual_name = json.dumps(_keyed_item_name(model, names))
-            item_target = f"Target::Model({contextual_name})"
-            aliases.append(f"        {contextual_name} => alias({json.dumps(names[int(_target(item)[1])].removesuffix('View'))});\n")
-        if model["indexed"]:
-            key_slots = ", ".join(str(slots[int(key["id"])]) for key in keys)
-            output.append(f"        {name} => indexed({item_target}, [{key_slots}]);\n")
-        else:
-            output.append(f"        {name} => list({item_target});\n")
-    output.extend(aliases)
-    output.append("    }\n}\n")
-    return "".join(output)
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
@@ -245,7 +192,7 @@ def _model_names(models: list[dict[str, Any]], root_names: dict[str, str]) -> di
             candidate = f"{base}{suffix}"
             suffix += 1
         used.add(candidate)
-        names[model_id] = candidate + "View"
+        names[model_id] = candidate
     return names
 
 
@@ -340,15 +287,16 @@ def _render_rust(
     models: list[dict[str, Any]],
     fields: list[dict[str, Any]],
     root_names: dict[str, str],
+    names: dict[int, str],
 ) -> dict[tuple[str, ...], str]:
     root_modules = {schema_name: _rust_module_identifier(root_name) for schema_name, root_name in root_names.items()}
-    if "__pyavd_generated_registry" in root_modules.values():
-        msg = "root name conflicts with the generated registry namespace"
-        raise ValueError(msg)
     models_by_id = {int(model["id"]): model for model in models}
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         by_parent.setdefault(int(field["parent"]), []).append(field)
+    # Python names are the only binding-specific model annotation. Field shape, slots, and
+    # relationship targets are derived by the attribute macro from the declaration itself.
+    python_names = {int(model["id"]): names[int(model["id"])] for model in _python_visible_models(models, by_parent, int(registry["root"]))}
     output = [
         "// Copyright (c) 2026 Arista Networks, Inc.\n",
         "// Generated from the AVD schema. Do not edit by hand.\n\n",
@@ -375,6 +323,7 @@ def _render_rust(
                 visited,
                 "",
                 module_outputs,
+                python_names,
             )
         )
     primary_schema_name = next(name for name, root_id in registry["roots"].items() if int(root_id) == int(registry["root"]))
@@ -425,6 +374,7 @@ def _render_rust_model(
     visited: set[int],
     indent: str,
     module_outputs: dict[tuple[str, ...], list[str]],
+    python_names: dict[int, str],
 ) -> list[str]:
     """Render one nominal model and recursively nest its child occurrences."""
     if model_id in visited:
@@ -445,17 +395,23 @@ def _render_rust_model(
     if kind == "List":
         item = next((field for field in fields if _relation(field)[0] == "Item"), None)
     primary_keys = _primary_key_fields(model, models, by_parent) if kind == "List" else []
-    options = ""
+    options = []
     if kind == "List":
-        options = "(list)"
+        options.append("list")
         if primary_keys:
             item_fields = by_parent[int(_target(item)[1])]
             key_accessors = _field_names(item_fields)
             key_names = ", ".join(key_accessors[int(field["id"])] for field in primary_keys)
             list_kind = "indexed_list" if model["indexed"] else "list"
-            options = f"({list_kind}, primary_key({key_names}))"
+            options = [list_kind, f"primary_key({key_names})"]
+    if model_id in python_names:
+        python_options = f"name = {json.dumps(python_names[model_id])}"
+        if primary_keys:
+            python_options += f", item_name = {json.dumps(_keyed_item_name(model, python_names))}"
+        options.append(f"python({python_options})")
+    attribute_options = f"({', '.join(options)})" if options else ""
     output = [
-        f"{indent}#[::validated_data::data_view{options}]\n",
+        f"{indent}#[::validated_data::data_view{attribute_options}]\n",
         f"{indent}pub struct {type_name}<'a, Mode> ",
     ]
     if kind == "Dict":
@@ -523,6 +479,7 @@ def _render_rust_model(
                 visited,
                 child_indent,
                 module_outputs,
+                python_names,
             )
         )
     if inline_namespace:
@@ -612,7 +569,7 @@ def _python_target_type(field: dict[str, Any], names: dict[int, str]) -> str:
     target_kind, target = _target(field)
     if target_kind == "Model" and field["relaxed"]:
         return "OpaqueData"
-    return names[int(target)].removesuffix("View") if target_kind == "Model" else _python_scalar_type(target)
+    return names[int(target)] if target_kind == "Model" else _python_scalar_type(target)
 
 
 def _python_field_type(field: dict[str, Any], names: dict[int, str]) -> str:
@@ -638,7 +595,7 @@ def _python_visible_models(models: list[dict[str, Any]], by_parent: dict[int, li
 def _keyed_item_name(model: dict[str, Any], names: dict[int, str]) -> str:
     """Name the thin item wrapper carrying one list's primary-key guarantees."""
     suffix = "IndexedItem" if model["indexed"] else "KeyedItem"
-    return f"{names[int(model['id'])].removesuffix('View')}{suffix}"
+    return f"{names[int(model['id'])]}{suffix}"
 
 
 def _render_keyed_item_stubs(
@@ -690,7 +647,7 @@ def _render_pyi(
     definitions: list[str] = []
     for model in _python_visible_models(models, by_parent, root_model):
         model_id = int(model["id"])
-        name = names[model_id].removesuffix("View")
+        name = names[model_id]
         model_fields = by_parent.get(model_id, [])
         if model["kind"] == "Dict":
             body = [f"class {name}:\n"]
@@ -742,7 +699,7 @@ def _render_pyi(
         definitions.append("".join(body).rstrip())
     definitions.append(_render_keyed_item_stubs(models, by_parent, names, root_model).rstrip())
     output = ["".join(header), "\n\n".join(definitions)]
-    root_name = names[root_model].removesuffix("View")
+    root_name = names[root_model]
     output.extend(
         [
             "\n\n",

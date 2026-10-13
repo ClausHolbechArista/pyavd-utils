@@ -62,12 +62,18 @@ impl ResolvedTarget {
     pub(crate) fn new(
         module: &Bound<'_, PyModule>,
         target: Target,
+        contextual_name: Option<&str>,
         opaque: &Bound<'_, PyType>,
         undefined: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         let class = match target {
             Target::Scalar => None,
-            Target::Model(name) => Some(module.getattr(name)?.cast_into::<PyType>()?.unbind()),
+            Target::Model(model) => Some(
+                module
+                    .getattr(contextual_name.unwrap_or(model().name))?
+                    .cast_into::<PyType>()?
+                    .unbind(),
+            ),
             Target::Opaque => Some(opaque.clone().unbind()),
         };
         Ok(Self {

@@ -7,6 +7,8 @@
 //! Declared fields describe accessor return types; they are replaced with a single checked
 //! backing token. Field order assigns local slots. Indexed lists name their primary-key fields
 //! and resolve slots through the item declaration, without copying numeric identifiers.
+//! Opt-in Python metadata refers back to these same descriptors. The macro emits metadata only;
+//! shared native implementations in `validated-data-py` own Python objects and perform access.
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -44,6 +46,12 @@ mod tests;
 /// changing the dictionary model's requiredness when it is used elsewhere.
 /// `list, primary_key(...)` permits duplicate keys and exposes positions only; `indexed_list`
 /// additionally exposes lookup by a unique key.
+///
+/// `python(name = "...")` opts a model into native Python registration. Keyed lists additionally
+/// declare `item_name = "..."` for their contextual item identity. The declaration emits a
+/// `validated_data_py::PythonModel` implementation whose fields reference the original Rust
+/// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields are
+/// not exposed as named Python properties, and relaxed relationships remain opaque payloads.
 #[proc_macro_attribute]
 pub fn data_view(arguments: TokenStream, input: TokenStream) -> TokenStream {
     let item = syn::parse_macro_input!(input as ItemStruct);
@@ -58,6 +66,13 @@ struct Options {
     list: bool,
     indexed: bool,
     primary_keys: Vec<syn::Ident>,
+    python: Option<PythonOptions>,
+}
+
+#[derive(Default)]
+struct PythonOptions {
+    name: Option<LitStr>,
+    item_name: Option<LitStr>,
 }
 
 fn options(arguments: Tokens) -> syn::Result<Options> {
@@ -75,6 +90,22 @@ fn options(arguments: Tokens) -> syn::Result<Options> {
                 Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated(&content)?
                     .into_iter()
                     .collect();
+        } else if meta.path.is_ident("python") {
+            let mut python = PythonOptions::default();
+            meta.parse_nested_meta(|nested| {
+                if nested.path.is_ident("name") {
+                    python.name = Some(nested.value()?.parse()?);
+                } else if nested.path.is_ident("item_name") {
+                    python.item_name = Some(nested.value()?.parse()?);
+                } else {
+                    return Err(nested.error("unknown Python binding option"));
+                }
+                Ok(())
+            })?;
+            if python.name.is_none() {
+                return Err(meta.error("python requires name = \"...\""));
+            }
+            options.python = Some(python);
         } else {
             return Err(meta.error("unknown data_view option"));
         }
@@ -91,6 +122,14 @@ fn options(arguments: Tokens) -> syn::Result<Options> {
         return Err(syn::Error::new(
             Span::call_site(),
             "primary_key is only valid on list or indexed_list",
+        ));
+    }
+    if let Some(python) = &options.python
+        && python.item_name.is_some() == options.primary_keys.is_empty()
+    {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "Python primary-key lists require item_name; other models must not declare it",
         ));
     }
     Ok(options)
@@ -140,6 +179,18 @@ struct Expansion {
     field_traits: Vec<Tokens>,
     extra_types: Tokens,
     primary_slots: Vec<Tokens>,
+    python_fields: Vec<Tokens>,
+    python_item: Option<Tokens>,
+}
+
+fn python_target(target: &Type, relaxed: bool) -> Tokens {
+    if scalar(target).is_some() {
+        quote!(::validated_data_py::Target::Scalar)
+    } else if relaxed {
+        quote!(::validated_data_py::Target::Opaque)
+    } else {
+        quote!(::validated_data_py::Target::Model(<#target as ::validated_data_py::PythonModel>::binding))
+    }
 }
 
 /// Rename only the declared mode parameter, not nominal types such as `module::Mode<'a, Mode>`.
@@ -254,6 +305,15 @@ fn expand_list(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
             }
         }
         let (item_type, required) = inner_type(declared)?;
+        if options.python.is_some() {
+            if relaxed && !options.primary_keys.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "Python primary-key items cannot be opaque relaxed payloads",
+                ));
+            }
+            expansion.python_item = Some(python_target(item_type, relaxed));
+        }
         let item_scalar = scalar(item_type);
         let scalar_type = item_scalar
             .as_ref()
@@ -310,7 +370,7 @@ fn expand_list(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
     Ok(expansion)
 }
 
-fn expand_dict(item: &ItemStruct) -> syn::Result<Expansion> {
+fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
     let mut expansion = Expansion::default();
     let name = &item.ident;
     let syn::Fields::Named(fields) = &item.fields else {
@@ -320,6 +380,7 @@ fn expand_dict(item: &ItemStruct) -> syn::Result<Expansion> {
         ));
     };
     for (slot, field) in fields.named.iter().enumerate() {
+        let field_index = slot;
         let slot = u32::try_from(slot).map_err(|error| syn::Error::new_spanned(field, error))?;
         let identifier = field
             .ident
@@ -373,6 +434,15 @@ fn expand_dict(item: &ItemStruct) -> syn::Result<Expansion> {
         if dynamic {
             continue;
         }
+        if options.python.is_some() {
+            let property_name = LitStr::new(&identifier.to_string(), identifier.span());
+            let conversion = python_target(target, relaxed);
+            expansion.python_fields.push(quote!(::validated_data_py::FieldBinding {
+                name: #property_name,
+                descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR.fields[#field_index],
+                target: #conversion,
+            }));
+        }
         let access = if target_scalar.is_some() {
             quote!(self.0.scalar::<#target>(#slot))
         } else {
@@ -414,7 +484,7 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
     let expansion = if options.list {
         expand_list(&options, &item)?
     } else {
-        expand_dict(&item)?
+        expand_dict(&options, &item)?
     };
     let model_kind = if options.list {
         quote!(::validated_data::ModelKind::List)
@@ -427,6 +497,31 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
     let field_traits = &expansion.field_traits;
     let extra_types = &expansion.extra_types;
     let indexed = options.indexed;
+    let python = if let Some(python) = options.python {
+        let python_name = python.name;
+        let item_name = python.item_name.map_or_else(
+            || quote!(None),
+            |python_item_name| quote!(Some(#python_item_name)),
+        );
+        let fields = &expansion.python_fields;
+        let item_expression = expansion
+            .python_item
+            .as_ref()
+            .map_or_else(|| quote!(None), |target| quote!(Some(#target)));
+        quote! {
+            impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data_py::PythonModel for #name<'a, __DataViewMode> {
+                const BINDING: ::validated_data_py::ModelBinding = ::validated_data_py::ModelBinding {
+                    name: #python_name,
+                    descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR,
+                    fields: &[#(#fields),*],
+                    item: #item_expression,
+                    keyed_item_name: #item_name,
+                };
+            }
+        }
+    } else {
+        quote!()
+    };
     Ok(quote! {
         #(#attributes)*
         #[derive(Clone, Copy, Debug)]
@@ -445,5 +540,6 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
         }
         #(#field_traits)*
         #extra_types
+        #python
     })
 }

@@ -4,8 +4,8 @@
 
 //! Native Python access to immutable validated-data archives.
 //!
-//! A generated binding catalog assigns Python names to schema models and field slots. The
-//! catalog creates distinct Python types, while native descriptors and collection operations
+//! Data-view attributes derive Python names and exposed fields alongside Rust model descriptors.
+//! Root-driven registration creates distinct Python types, while native descriptors and collection operations
 //! share their compiled implementation. There is no generated Python executable source and
 //! no per-field `PyO3` monomorphization. The schema's borrowed, mode-parameterized Rust views
 //! remain separate: Python objects own archive handles rather than extending Rust borrows.
@@ -18,7 +18,9 @@ mod catalog;
 mod collections;
 mod descriptors;
 
-pub use catalog::{FieldBinding, ModelBinding, ModelShape, Target, install_models};
+extern crate self as validated_data_py;
+
+pub use catalog::{FieldBinding, ModelBinding, PythonModel, Target, install_models};
 pub use descriptors::{PyValueHandle, wrap_named};
 
 #[cfg(test)]

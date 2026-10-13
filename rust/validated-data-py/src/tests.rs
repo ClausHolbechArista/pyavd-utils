@@ -11,31 +11,36 @@ use validated_data::{
     ArchiveModel as _, DataStore, Field, ModelRegistry, RequiredValue, data_view,
 };
 
-use crate::{Target, install_models, python_data_views, wrap_named};
+use crate::{FieldBinding, ModelBinding, PythonModel as _, Target, install_models, wrap_named};
 
-#[data_view]
+#[data_view(python(name = "Root"))]
 struct Root<'a, Mode> {
     name: RequiredValue<&'a str, Mode>,
     children: Field<Children<'a, Mode>>,
     absent: Field<&'a str>,
+    #[data_view(rename = "schema-name")]
+    renamed: Field<&'a str>,
+    #[data_view(relaxed)]
+    opaque: Field<Hidden<'a, validated_data::RelaxedValidated>>,
+    #[data_view(dynamic = "selectors.names")]
+    dynamic: Field<Hidden<'a, Mode>>,
 }
 
-#[data_view(indexed_list, primary_key(name))]
+#[data_view(
+    indexed_list,
+    primary_key(name),
+    python(name = "Children", item_name = "KeyedItem")
+)]
 struct Children<'a, Mode>(Field<Item<'a, Mode>>);
 
-#[data_view]
+#[data_view(python(name = "Item"))]
 struct Item<'a, Mode> {
     name: RequiredValue<&'a str, Mode>,
 }
 
-python_data_views! {
-    BINDINGS {
-        "Root" => dict { "name": 0 => Target::Scalar, "children": 1 => Target::Model("Children"), "absent": 2 => Target::Scalar };
-        "Children" => indexed(Target::Model("KeyedItem"), [0]);
-        "Item" => dict { "name": 0 => Target::Scalar };
-        "KeyedItem" => alias("Item");
-    }
-}
+// Rust-only descendants require no PythonModel implementation.
+#[data_view]
+struct Hidden<'a, Mode> {}
 
 #[test]
 #[allow(
@@ -50,7 +55,7 @@ fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("data.rkyv");
     validated_data::publish(
-        &serde_json::json!({"name":"root", "children":[{"name":"leaf"}]}),
+        &serde_json::json!({"name":"root", "children":[{"name":"leaf"}], "schema-name":"renamed"}),
         [2; 32],
         &file,
         registry,
@@ -70,7 +75,7 @@ fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
     Python::attach(|py| {
         let module = PyModule::new(py, "native_fixture")?;
         let undefined = py.import("builtins")?.getattr("object")?.call0()?;
-        install_models(&module, BINDINGS, &py.get_type::<PyDict>(), &undefined)?;
+        install_models::<Root<'static>>(&module, &py.get_type::<PyDict>(), &undefined)?;
         let wrapper = wrap_named(&module, "Root", store.root_handle())?;
         drop(store);
         let locals = PyDict::new(py);
@@ -81,11 +86,15 @@ fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
             c"\
 assert root.name == 'root'
 assert root.absent is undefined
+assert root.renamed == 'renamed'
+assert not hasattr(models, 'Hidden')
+assert not hasattr(models.Root, 'dynamic')
 assert hasattr(models.Root.name, '__get__')
 children = root.children
 assert children.get('absent') is undefined
 assert children.get('absent', None) is None
 assert isinstance(children['leaf'], models.Item)
+assert isinstance(children['leaf'], models.KeyedItem)
 iterator = children.items()
 del root, children
 assert [(key, item.name) for key, item in iterator] == [('leaf', 'leaf')]
@@ -106,15 +115,12 @@ fn cached_child_types_participate_in_python_cycle_collection() -> PyResult<()> {
     Python::attach(|py| {
         let module = PyModule::new(py, "collectible_fixture")?;
         let undefined = py.None().into_bound(py);
-        let models = [crate::ModelBinding {
-            name: "Node",
-            shape: crate::ModelShape::Dict(&[crate::FieldBinding {
-                name: "child",
-                slot: 0,
-                target: Target::Model("Node"),
-            }]),
-        }];
-        install_models(&module, &models, &py.get_type::<PyDict>(), &undefined)?;
+        crate::catalog::install_root(
+            &module,
+            node_binding(),
+            &py.get_type::<PyDict>(),
+            &undefined,
+        )?;
         let reference = py
             .import("weakref")?
             .getattr("ref")?
@@ -124,4 +130,68 @@ fn cached_child_types_participate_in_python_cycle_collection() -> PyResult<()> {
         assert!(reference.call0()?.is_none());
         Ok(())
     })
+}
+
+fn node_binding() -> &'static ModelBinding {
+    const FIELD: validated_data::FieldDescriptor = validated_data::FieldDescriptor {
+        id: 0,
+        relation: validated_data::FieldRelation::Key("child"),
+        target_model: None,
+        scalar_type: None,
+        required: false,
+        relaxed: false,
+    };
+    const NODE: ModelBinding = ModelBinding {
+        name: "Node",
+        descriptor: &validated_data::ModelDescriptor {
+            identity: "gc_fixture::Node",
+            kind: validated_data::ModelKind::Dict,
+            fields: &[FIELD],
+            primary_key_fields: &[],
+            indexed: false,
+        },
+        fields: &[FieldBinding {
+            name: "child",
+            descriptor: &FIELD,
+            target: Target::Model(node_binding),
+        }],
+        item: None,
+        keyed_item_name: None,
+    };
+    &NODE
+}
+
+#[test]
+fn binding_fields_reference_the_original_rust_descriptors() {
+    let root = Root::<'static, validated_data::Validated>::binding();
+    let renamed_field = root
+        .fields
+        .iter()
+        .find(|field| field.name == "renamed")
+        .expect("renamed property");
+    assert_eq!(
+        renamed_field.descriptor,
+        &Root::<'static, validated_data::Validated>::DESCRIPTOR.fields[3]
+    );
+    assert_eq!(
+        renamed_field.descriptor.relation,
+        validated_data::FieldRelation::Key("schema-name")
+    );
+    assert!(
+        root.fields
+            .iter()
+            .any(|candidate| matches!(candidate.target, Target::Opaque))
+    );
+    assert!(
+        !root
+            .fields
+            .iter()
+            .any(|candidate| candidate.name == "dynamic")
+    );
+    assert_eq!(
+        Children::<'static, validated_data::Validated>::binding()
+            .descriptor
+            .primary_key_fields,
+        Children::<'static, validated_data::Validated>::DESCRIPTOR.primary_key_fields
+    );
 }
