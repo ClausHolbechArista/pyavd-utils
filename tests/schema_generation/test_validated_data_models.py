@@ -26,6 +26,18 @@ def _combined_rust_source(root: Path) -> str:
     return "\n".join(_rust_sources(root).values())
 
 
+def test_collection_api_signatures_are_declared_once(tmp_path: Path) -> None:
+    """Keep native utility signatures and documentation in shared bases, not every model."""
+    rust, pyi = tmp_path / "models.rs", tmp_path / "models.pyi"
+    generate_validated_data_models(ARTIFACTS / "schemas.json", "schema_generation_fixture", rust, pyi, "SchemaGenerationFixture", "SchemaGenerationFixture")
+    classes = [node for node in ast.parse(pyi.read_text(encoding="UTF-8")).body if isinstance(node, ast.ClassDef)]
+    methods = [node.name for model in classes for node in model.body if isinstance(node, ast.FunctionDef)]
+    for name in ["__bool__", "__len__", "__iter__", "__reversed__", "count", "index", "keys", "values", "items"]:
+        assert methods.count(name) == 1
+    assert methods.count("__eq__") == 2  # Dictionary and collection equality have distinct documentation.
+    assert methods.count("get") == 2  # Both overloads are declared only on the indexed base.
+
+
 def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path: Path) -> None:
     """Promise Sequence only where integer indexing denotes a position, not a primary key."""
     source = tmp_path / "schemas.json"
@@ -56,17 +68,27 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
     classes = {node.name: node for node in ast.parse(pyi.read_text(encoding="UTF-8")).body if isinstance(node, ast.ClassDef)}
     positional = classes["FixtureValuesList"]
     keyed = classes["FixtureEntriesList"]
-    assert ast.unparse(positional.bases[0]) == "Sequence[str | None]"
-    assert not keyed.bases
-    for model in [positional, keyed]:
-        methods = {node.name: node for node in model.body if isinstance(node, ast.FunctionDef)}
-        assert {"__len__", "__iter__", "__reversed__", "__contains__", "count", "index", "__eq__"} <= methods.keys()
-        assert ast.unparse(methods["count"].args.args[1].annotation) == "object"
-    key_getitem = next(node for node in keyed.body if isinstance(node, ast.FunctionDef) and node.name == "__getitem__")
+    assert [ast.unparse(base) for base in positional.bases] == ["_Collection[str | None]", "Sequence[str | None]"]
+    assert [ast.unparse(base) for base in keyed.bases] == ["_IndexedList[int, FixtureEntriesListIndexedItem]"]
+    collection_methods = {node.name: node for node in classes["_Collection"].body if isinstance(node, ast.FunctionDef)}
+    assert {"__len__", "__iter__", "__reversed__", "count", "index", "__eq__"} == collection_methods.keys()
+    assert ast.unparse(collection_methods["count"].args.args[1].annotation) == "object"
+    assert ast.unparse(collection_methods["__iter__"].returns) == "Iterator[_T_co]"
+    slice_getitem = next(
+        node
+        for node in positional.body
+        if isinstance(node, ast.FunctionDef) and isinstance(node.args.args[1].annotation, ast.Name) and node.args.args[1].annotation.id == "slice"
+    )
+    assert ast.unparse(slice_getitem.returns) == "list[str | None]"
+    indexed_methods = {node.name: node for node in classes["_IndexedList"].body if isinstance(node, ast.FunctionDef)}
+    assert {"__contains__", "__getitem__", "get", "keys", "values", "items"} == indexed_methods.keys()
+    key_getitem = indexed_methods["__getitem__"]
     assert key_getitem.args.args[1].arg == "key"
-    assert ast.unparse(key_getitem.args.args[1].annotation) == "int"
-    empty_methods = {node.name for node in classes["FixtureEmpty"].body if isinstance(node, ast.FunctionDef)}
-    assert {"__bool__", "__eq__"} <= empty_methods
+    assert ast.unparse(key_getitem.args.args[1].annotation) == "_K"
+    assert ast.unparse(key_getitem.returns) == "_T_co"
+    assert [ast.unparse(base) for base in classes["FixtureEmpty"].bases] == ["_Model"]
+    model_methods = {node.name for node in classes["_Model"].body if isinstance(node, ast.FunctionDef)}
+    assert {"__bool__", "__eq__"} == model_methods
 
 
 def test_generate_validated_data_models(tmp_path: Path) -> None:
@@ -99,8 +121,8 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     assert "primary_key(name)" in rust_source
     assert 'python(name = "SchemaGenerationFixture")' in rust_source
     assert 'python(name = "SchemaGenerationFixtureInterfaceProfilesList", item_name = "SchemaGenerationFixtureInterfaceProfilesListIndexedItem")' in rust_source
-    assert "def __getitem__(self, key: str)" in pyi_source
-    assert "class SchemaGenerationFixture:" in pyi_source
+    assert "class SchemaGenerationFixtureInterfaceProfilesList(_IndexedList[str, SchemaGenerationFixtureInterfaceProfilesListIndexedItem]):" in pyi_source
+    assert "class SchemaGenerationFixture(_Model):" in pyi_source
     assert "class StrValue:" not in pyi_source
     assert "Sequence[str | None]" in pyi_source
     assert "-> str | UndefinedType | None" in pyi_source
@@ -301,7 +323,7 @@ def test_validation_modes_preserve_reuse_and_python_presence_contracts(tmp_path:
     assert "def name(self) -> str:" in pyi_source
     assert "def enabled(self) -> bool | UndefinedType | None:" in pyi_source
     assert "class FixtureEntriesListIndexedItem(FixtureEntriesItems):" in pyi_source
-    assert "class FixtureNumbersList(Sequence[int]):" in pyi_source
+    assert "class FixtureNumbersList(_Collection[int], Sequence[int]):" in pyi_source
     root_class = next(node for node in ast.parse(pyi_source).body if isinstance(node, ast.ClassDef) and node.name == "Fixture")
     properties = [node.name for node in root_class.body if isinstance(node, ast.FunctionDef)]
     assert len(properties) == len(set(properties))
@@ -339,7 +361,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
     assert "pub name: ::validated_data::Field<&'a str>" in rust_source
     pyi_source = pyi.read_text(encoding="UTF-8")
-    assert "class FixtureDuplicatesList(Sequence[FixtureDuplicatesListKeyedItem]):" in pyi_source
+    assert "class FixtureDuplicatesList(_Collection[FixtureDuplicatesListKeyedItem], Sequence[FixtureDuplicatesListKeyedItem]):" in pyi_source
     assert "class FixtureDuplicatesListKeyedItem(Shared):" in pyi_source
     assert "def name(self) -> str | UndefinedType | None:" in pyi_source
     classes = {node.name: node for node in ast.parse(pyi_source).body if isinstance(node, ast.ClassDef)}
@@ -348,7 +370,13 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert isinstance(name_property.returns, ast.Name)
     assert name_property.returns.id == "str"
     sequence_methods = {node.name for node in classes["FixtureDuplicatesList"].body if isinstance(node, ast.FunctionDef)}
-    assert sequence_methods == {"__iter__", "__getitem__", "__len__", "__contains__", "__reversed__", "__eq__", "count", "index"}
+    assert sequence_methods == {"__getitem__"}
+    assert [ast.unparse(base) for base in classes["FixtureDuplicatesList"].bases] == [
+        "_Collection[FixtureDuplicatesListKeyedItem]",
+        "Sequence[FixtureDuplicatesListKeyedItem]",
+    ]
+    collection_methods = {node.name for node in classes["_Collection"].body if isinstance(node, ast.FunctionDef)}
+    assert {"__iter__", "__len__", "__reversed__", "__eq__", "count", "index"} == collection_methods
     assert 'python(name = "FixtureDuplicatesList", item_name = "FixtureDuplicatesListKeyedItem")' in rust_source
     assert 'python(name = "Shared")' in rust_source
     assert "indexed_list" not in rust_source
@@ -373,8 +401,8 @@ def test_generate_validated_data_models_uses_language_specific_root_names(tmp_pa
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "pub mod avd_design;" in rust_source
     assert "pub struct AvdDesign<'a, Mode>" in rust_source
-    assert "class AVDDesign:" in pyi_source
-    assert "class AvdDesign:" not in pyi_source
+    assert "class AVDDesign(_Model):" in pyi_source
+    assert "class AvdDesign(_Model):" not in pyi_source
 
 
 def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_path: Path) -> None:

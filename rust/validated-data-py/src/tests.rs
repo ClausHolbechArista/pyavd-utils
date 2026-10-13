@@ -121,6 +121,21 @@ fn collection_protocols_match_the_typing_contract() -> PyResult<()> {
             &py.get_type::<PyDict>(),
             &py.None().into_bound(py),
         )?;
+        assert!(
+            module
+                .getattr("_Model")?
+                .is(py.get_type::<crate::descriptors::NativeDict>())
+        );
+        assert!(
+            module
+                .getattr("_Collection")?
+                .is(py.get_type::<crate::collections::NativeList>())
+        );
+        assert!(
+            module
+                .getattr("_IndexedList")?
+                .is(py.get_type::<crate::collections::NativeIndexedList>())
+        );
         let locals = PyDict::new(py);
         locals.set_item(
             "root",

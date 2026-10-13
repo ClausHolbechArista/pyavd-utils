@@ -624,6 +624,48 @@ def _render_keyed_item_stubs(
     return "".join(output)
 
 
+def _render_pyi_bases() -> str:
+    """
+    Describe native base types once, with generics for schema-specific item and key types.
+
+    The collection base exposes only operations shared by positional and indexed lists.
+    Positional models additionally satisfy Sequence through native ABC registration and declare
+    their slice overload locally, since slices return Python lists rather than model views.
+    """
+    return '''_T_co = TypeVar("_T_co", covariant=True)
+_K = TypeVar("_K")
+
+class _Model:
+    """Immutable, unhashable model; equality compares all stored data of the same nominal type."""
+    def __bool__(self) -> bool:
+        """Whether any key is supplied, including unknown/custom keys; no defaults are inserted."""
+    def __eq__(self, other: object) -> bool:
+        """Compare complete contents, ignoring dictionary key order but preserving list order and nulls."""
+
+class _Collection(Generic[_T_co]):
+    """Immutable, unhashable collection; equality requires the same nominal type and stored item order."""
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[_T_co]: ...
+    def __reversed__(self) -> Iterator[_T_co]: ...
+    def __eq__(self, other: object) -> bool: ...
+    def count(self, value: object) -> int:
+        """Count items equal to value; this searches values, not primary keys."""
+    def index(self, value: object, start: int | None = None, stop: int | None = None) -> int:
+        """Find the first equal item position in the bounded range; raise ValueError if absent."""
+
+class _IndexedList(_Collection[_T_co], Generic[_K, _T_co]):
+    """Key-indexed collection, not a Sequence; iteration and positional searches operate on values."""
+    def __contains__(self, key: _K) -> bool: ...
+    def __getitem__(self, key: _K) -> _T_co: ...
+    @overload
+    def get(self, key: _K) -> _T_co | UndefinedType: ...
+    @overload
+    def get(self, key: _K, default: Any) -> _T_co | Any: ...
+    def keys(self) -> Iterator[_K]: ...
+    def values(self) -> Iterator[_T_co]: ...
+    def items(self) -> Iterator[tuple[_K, _T_co]]: ...'''
+
+
 def _render_pyi(
     models: list[dict[str, Any]],
     fields: list[dict[str, Any]],
@@ -642,25 +684,20 @@ def _render_pyi(
         "# ruff: noqa: PYI021\n",
         "from collections.abc import Iterator, Sequence\n",
         "from pathlib import Path\n",
-        "from typing import Any, overload\n\n",
+        "from typing import Any, Generic, TypeVar, overload\n\n",
         "from pyavd._utils.undefined import UndefinedType\n",
         "from pyavd._rust import OpaqueData\n\n",
     ]
-    definitions: list[str] = []
+    definitions: list[str] = [_render_pyi_bases()]
     for model in _python_visible_models(models, by_parent, root_model):
         model_id = int(model["id"])
         name = names[model_id]
         model_fields = by_parent.get(model_id, [])
         if model["kind"] == "Dict":
-            body = [
-                f"class {name}:\n",
-                '    """Immutable model; equality compares all stored data of the same nominal type."""\n',
-                "    def __bool__(self) -> bool:\n",
-                '        """Whether any key is supplied, including unknown/custom keys; no defaults are inserted."""\n',
-                "    def __eq__(self, other: object) -> bool:\n",
-                '        """Compare complete contents, ignoring dictionary key order but preserving list order and nulls."""\n',
-            ]
+            body = [f"class {name}(_Model):\n"]
             static_fields = [field for field in model_fields if _relation(field)[0] == "Key"]
+            if not static_fields:
+                body.append("    ...\n")
             for field in static_fields:
                 name = _field_names(model_fields)[int(field["id"])]
                 body.append(f"    @property\n    def {name}(self) -> {_python_field_type(field, names)}: ...\n")
@@ -672,29 +709,14 @@ def _render_pyi(
         if primary_key_fields:
             base_item_type = _keyed_item_name(model, names)
         item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
-        # Key-indexed lists cannot satisfy Sequence[int-indexed] semantics. Their read-only
-        # collection helpers are explicit instead of inheriting an incompatible typing contract.
-        base = "" if model["indexed"] else f"(Sequence[{item_type}])"
-        body = [
-            f"class {name}{base}:\n",
-            '    """Immutable collection; searches and reverse iteration follow stored item order."""\n',
-            "    def __len__(self) -> int: ...\n",
-            f"    def __iter__(self) -> Iterator[{item_type}]: ...\n",
-            f"    def __reversed__(self) -> Iterator[{item_type}]: ...\n",
-            "    def __eq__(self, other: object) -> bool: ...\n",
-            "    def count(self, value: object) -> int:\n",
-            '        """Count items equal to value; this searches values, not primary keys."""\n',
-            "    def index(self, value: object, start: int | None = None, stop: int | None = None) -> int:\n",
-            '        """Find the first equal item position in the bounded range; raise ValueError if absent."""\n',
-        ]
         if not model["indexed"]:
+            body = [f"class {name}(_Collection[{item_type}], Sequence[{item_type}]):\n"]
             body.extend(
                 [
                     "    @overload\n",
                     f"    def __getitem__(self, index: int) -> {item_type}: ...\n",
                     "    @overload\n",
                     f"    def __getitem__(self, index: slice) -> list[{item_type}]: ...\n",
-                    "    def __contains__(self, value: object) -> bool: ...\n",
                 ]
             )
             definitions.append("".join(body).rstrip())
@@ -704,21 +726,7 @@ def _render_pyi(
             raise ValueError(msg)
         primary_key = primary_key_fields[0]
         primary_key_type = _python_target_type(primary_key, names)
-        item_without_none = base_item_type
-        body.extend(
-            [
-                f"    def __contains__(self, key: {primary_key_type}) -> bool: ...\n",
-                f"    def __getitem__(self, key: {primary_key_type}) -> {item_without_none}: ...\n",
-                "    @overload\n",
-                f"    def get(self, key: {primary_key_type}) -> {item_without_none} | UndefinedType: ...\n",
-                "    @overload\n",
-                f"    def get(self, key: {primary_key_type}, default: Any) -> {item_without_none} | Any: ...\n",
-                f"    def keys(self) -> Iterator[{primary_key_type}]: ...\n",
-                f"    def values(self) -> Iterator[{item_type}]: ...\n",
-                f"    def items(self) -> Iterator[tuple[{primary_key_type}, {item_without_none}]]: ...\n",
-            ]
-        )
-        definitions.append("".join(body).rstrip())
+        definitions.append(f"class {name}(_IndexedList[{primary_key_type}, {item_type}]): ...")
     definitions.append(_render_keyed_item_stubs(models, by_parent, names, root_model).rstrip())
     output = ["".join(header), "\n\n".join(definitions)]
     root_name = names[root_model]

@@ -111,6 +111,9 @@ fn reachable_models(
 /// creates nominal `CPython` subclasses and descriptors from the prepared metadata; relaxed and
 /// dynamic-only descendants are not registered. Child types and undefined values are cached in
 /// interpreter-local, garbage-collected objects, not global Rust state.
+/// The module also exposes `_Model`, `_Collection`, and `_IndexedList` aliases to the native
+/// bases for generated stub inheritance. Their generic parameters describe static typing only;
+/// registration does not create additional wrapper classes or runtime generic specializations.
 ///
 /// The caller must structurally check the archive with the matching Rust model before returning
 /// a root wrapper. Registration describes access; it does not establish validation guarantees.
@@ -133,6 +136,11 @@ pub(crate) fn install_root(
     let type_factory = py.import("builtins")?.getattr("type")?;
     let sequence = py.import("collections.abc")?.getattr("Sequence")?;
     let module_name: String = module.name()?.extract()?;
+    // Stub inheritance names the existing native bases, parameterized with each schema's
+    // field/item types. Export aliases, not new classes or runtime typing wrappers.
+    module.add("_Model", py.get_type::<NativeDict>())?;
+    module.add("_Collection", py.get_type::<NativeList>())?;
+    module.add("_IndexedList", py.get_type::<NativeIndexedList>())?;
     // Create every ordinary type first so schema order and forward references do not matter.
     for model in models.values() {
         let base = match model.descriptor.kind {
