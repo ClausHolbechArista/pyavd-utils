@@ -638,6 +638,8 @@ def _render_pyi(
     header = [
         "# Copyright (c) 2026 Arista Networks, Inc.\n",
         "# Generated from the AVD schema. Do not edit by hand.\n",
+        "# These stubs are the Python API documentation; there is no companion Python source.\n",
+        "# ruff: noqa: PYI021\n",
         "from collections.abc import Iterator, Sequence\n",
         "from pathlib import Path\n",
         "from typing import Any, overload\n\n",
@@ -650,10 +652,15 @@ def _render_pyi(
         name = names[model_id]
         model_fields = by_parent.get(model_id, [])
         if model["kind"] == "Dict":
-            body = [f"class {name}:\n"]
+            body = [
+                f"class {name}:\n",
+                '    """Immutable model; equality compares all stored data of the same nominal type."""\n',
+                "    def __bool__(self) -> bool:\n",
+                '        """Whether any key is supplied, including unknown/custom keys; no defaults are inserted."""\n',
+                "    def __eq__(self, other: object) -> bool:\n",
+                '        """Compare complete contents, ignoring dictionary key order but preserving list order and nulls."""\n',
+            ]
             static_fields = [field for field in model_fields if _relation(field)[0] == "Key"]
-            if not static_fields:
-                body.append("    ...\n")
             for field in static_fields:
                 name = _field_names(model_fields)[int(field["id"])]
                 body.append(f"    @property\n    def {name}(self) -> {_python_field_type(field, names)}: ...\n")
@@ -665,7 +672,21 @@ def _render_pyi(
         if primary_key_fields:
             base_item_type = _keyed_item_name(model, names)
         item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
-        body = [f"class {name}(Sequence[{item_type}]):\n", f"    def __iter__(self) -> Iterator[{item_type}]: ...\n"]
+        # Key-indexed lists cannot satisfy Sequence[int-indexed] semantics. Their read-only
+        # collection helpers are explicit instead of inheriting an incompatible typing contract.
+        base = "" if model["indexed"] else f"(Sequence[{item_type}])"
+        body = [
+            f"class {name}{base}:\n",
+            '    """Immutable collection; searches and reverse iteration follow stored item order."""\n',
+            "    def __len__(self) -> int: ...\n",
+            f"    def __iter__(self) -> Iterator[{item_type}]: ...\n",
+            f"    def __reversed__(self) -> Iterator[{item_type}]: ...\n",
+            "    def __eq__(self, other: object) -> bool: ...\n",
+            "    def count(self, value: object) -> int:\n",
+            '        """Count items equal to value; this searches values, not primary keys."""\n',
+            "    def index(self, value: object, start: int | None = None, stop: int | None = None) -> int:\n",
+            '        """Find the first equal item position in the bounded range; raise ValueError if absent."""\n',
+        ]
         if not model["indexed"]:
             body.extend(
                 [
@@ -673,6 +694,7 @@ def _render_pyi(
                     f"    def __getitem__(self, index: int) -> {item_type}: ...\n",
                     "    @overload\n",
                     f"    def __getitem__(self, index: slice) -> list[{item_type}]: ...\n",
+                    "    def __contains__(self, value: object) -> bool: ...\n",
                 ]
             )
             definitions.append("".join(body).rstrip())

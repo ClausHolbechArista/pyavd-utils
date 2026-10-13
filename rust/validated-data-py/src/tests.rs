@@ -42,6 +42,188 @@ struct Item<'a, Mode> {
 #[data_view]
 struct Hidden<'a, Mode> {}
 
+#[data_view(python(name = "ProtocolRoot"))]
+struct ProtocolRoot<'a, Mode> {
+    numbers: Field<ProtocolNumbers<'a, Mode>>,
+    strings: Field<ProtocolStrings<'a, Mode>>,
+    dictionaries: Field<ProtocolDictionaries<'a, Mode>>,
+    children: Field<Children<'a, Mode>>,
+    hybrids: Field<ProtocolHybrids<'a, Mode>>,
+    empty: Field<ProtocolDict<'a, Mode>>,
+    different_type: Field<OtherProtocolDict<'a, Mode>>,
+}
+
+#[data_view(list, python(name = "ProtocolNumbers"))]
+struct ProtocolNumbers<'a, Mode>(Field<i64>);
+
+#[data_view(list, python(name = "ProtocolStrings"))]
+struct ProtocolStrings<'a, Mode>(Field<&'a str>);
+
+#[data_view(list, python(name = "ProtocolDictionaries"))]
+struct ProtocolDictionaries<'a, Mode>(Field<ProtocolDict<'a, Mode>>);
+
+#[data_view(
+    list,
+    primary_key(name),
+    python(name = "ProtocolHybrids", item_name = "HybridItem")
+)]
+struct ProtocolHybrids<'a, Mode>(Field<Item<'a, Mode>>);
+
+#[data_view(python(name = "ProtocolDict"))]
+struct ProtocolDict<'a, Mode> {
+    enabled: Field<bool>,
+}
+
+#[data_view(python(name = "OtherProtocolDict"))]
+struct OtherProtocolDict<'a, Mode> {
+    enabled: Field<bool>,
+}
+
+fn protocol_store(value: &serde_json::Value) -> PyResult<Arc<DataStore>> {
+    let registry = ModelRegistry {
+        root_model: ProtocolRoot::<'static, validated_data::Validated>::DESCRIPTOR,
+        hash: [9; 32],
+    };
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("data.rkyv");
+    validated_data::publish(value, [2; 32], &file, registry)
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    let store = Arc::new(
+        DataStore::from_file(&file, [2; 32], registry)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?,
+    );
+    store
+        .root_as::<ProtocolRoot<'_>>()
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    Ok(store)
+}
+
+#[test]
+#[allow(
+    clippy::panic_in_result_fn,
+    clippy::too_many_lines,
+    reason = "The embedded Python script checks the public collection protocols together."
+)]
+fn collection_protocols_match_the_typing_contract() -> PyResult<()> {
+    let value = serde_json::json!({
+        "numbers": [1, 2, 1, 3, null], "strings": ["one", "two", "one"],
+        "dictionaries": [{}, {"enabled": false}, {}],
+        "children": [{"name": "leaf"}], "hybrids": [{"name": "leaf"}, {"name": "leaf"}],
+        "empty": {}, "different_type": {}, "custom": {"opaque": [1, null, true]}
+    });
+    let first = protocol_store(&value)?;
+    let second = protocol_store(&value)?;
+    Python::initialize();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "protocol_fixture")?;
+        install_models::<ProtocolRoot<'static>>(
+            &module,
+            &py.get_type::<PyDict>(),
+            &py.None().into_bound(py),
+        )?;
+        let locals = PyDict::new(py);
+        locals.set_item(
+            "root",
+            wrap_named(&module, "ProtocolRoot", first.root_handle())?,
+        )?;
+        locals.set_item(
+            "other",
+            wrap_named(&module, "ProtocolRoot", second.root_handle())?,
+        )?;
+        py.run(
+            c"\
+from collections.abc import Sequence
+import operator
+numbers = root.numbers
+assert isinstance(numbers, Sequence)
+assert list(numbers) == [1, 2, 1, 3, None]
+assert len(numbers) == 5
+assert numbers.count(1) == numbers.count(True) == numbers.count(1.0) == 2
+assert numbers.count(None) == 1
+assert numbers.count(10**100) == 0
+assert 2 in numbers and 99 not in numbers
+assert numbers.index(1) == 0
+assert numbers.index(1, 1) == 2
+assert numbers.index(1, -3) == 2
+assert numbers.index(1, -10**100) == 0
+assert numbers.index(1, stop=-1) == 0
+assert root.strings.count('one') == 2
+assert root.strings.count('\\ud800') == 0
+assert root.strings.index('one', 1) == 2
+assert root.strings.count(chr(0xD800)) == 0
+assert numbers == other.numbers and numbers != root.strings
+for bounds in [(1, 2), (4, None), (10**100, None), (3, 1)]:
+    try:
+        numbers.index(1, *bounds)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('bounded search must fail')
+class Index:
+    def __index__(self):
+        return 1
+assert numbers.index(1, Index()) == 2
+try:
+    numbers.index(1, 1.5)
+except TypeError:
+    pass
+else:
+    raise AssertionError('bounds require integer indices')
+try:
+    numbers[10**100]
+except IndexError:
+    pass
+else:
+    raise AssertionError('large out of range index')
+class EqualToThree:
+    def __eq__(self, other):
+        return other == 3
+assert numbers.count(EqualToThree()) == 1
+class Raises:
+    def __eq__(self, other):
+        raise RuntimeError('comparison failure')
+try:
+    numbers.count(Raises())
+except RuntimeError as error:
+    assert str(error) == 'comparison failure'
+else:
+    raise AssertionError('comparison exceptions must propagate')
+assert not root.empty
+assert root.dictionaries[1]  # a supplied false value still makes a model nonempty
+assert root.empty == other.empty
+assert root.empty != root.different_type
+assert root.empty != {} and root.empty != None
+assert root == other
+assert root.dictionaries.count(root.empty) == 2
+assert root.dictionaries.index(root.empty, 1) == 2
+for view in [root, root.empty, numbers, root.children['leaf']]:
+    try:
+        hash(view)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError('structurally equal views cannot use identity hashes')
+assert not isinstance(root.children, Sequence)
+assert root.children['leaf'].name == 'leaf'
+assert 'leaf' in root.children
+assert root.children.count(root.children['leaf']) == 1
+assert root.children.index(root.children['leaf']) == 0
+assert isinstance(root.hybrids, Sequence)
+assert root.hybrids.count(root.hybrids[0]) == 2
+reverse = reversed(numbers)
+assert operator.length_hint(reverse) == 5
+assert next(reverse) is None
+assert operator.length_hint(reverse) == 4
+del root, other, numbers
+assert list(reverse) == [3, 1, 2, 1]
+assert list(reverse) == []
+",
+            None,
+            Some(&locals),
+        )
+    })
+}
+
 #[test]
 #[allow(
     clippy::panic_in_result_fn,

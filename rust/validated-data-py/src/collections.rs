@@ -7,14 +7,18 @@
 //! Duplicate-key lists use only the positional implementation. Unique-key lists override indexing
 //! with key lookup and add mapping-style helpers. Each iterator owns the archive and cached item
 //! type independently of its source Python object.
+//! Positional classes implement the complete read-only `Sequence` API. Keyed classes retain
+//! value iteration and positional search helpers, but are not sequences: indexing and membership
+//! operate on primary keys. Equality compares complete ordered contents of the same nominal type.
 
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError};
+use pyo3::basic::CompareOp;
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList, PySlice, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, PyVisit};
 use validated_data::{ListHandle, PrimaryKeyValue};
 
-use crate::descriptors::{PyValueHandle, ResolvedTarget};
+use crate::descriptors::{PyValueHandle, ResolvedTarget, equality_result};
 
 #[pyclass(frozen)]
 #[derive(Debug)]
@@ -73,6 +77,8 @@ impl NativeList {
             handle: self.handle.clone(),
             info: self.info.clone_ref(py),
             index: 0,
+            end: self.handle.len(),
+            reverse: false,
             kind,
         }
     }
@@ -110,6 +116,76 @@ impl NativeList {
         self.iterator(py, Iteration::Values)
     }
 
+    fn __reversed__(&self, py: Python<'_>) -> NativeIterator {
+        let mut iterator = self.iterator(py, Iteration::Values);
+        iterator.reverse = true;
+        iterator
+    }
+
+    fn __contains__(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+        for index in 0..self.handle.len() {
+            if let Some(item) = self.handle.get(index)
+                && self.info.borrow(py).target.matches(py, item, value)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Count matching values without constructing a Python list.
+    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        let mut count = 0;
+        for index in 0..self.handle.len() {
+            if let Some(item) = self.handle.get(index)
+                && self.info.borrow(py).target.matches(py, item, value)?
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Find the first matching position in the bounded range, or raise `ValueError`.
+    /// Omitted/None bounds select the start/end; negative bounds count from the end.
+    #[pyo3(signature = (value, start=None, stop=None))]
+    fn index(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        start: Option<&Bound<'_, PyAny>>,
+        stop: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<usize> {
+        let start = search_bound(py, start, self.handle.len(), 0)?;
+        let stop = search_bound(py, stop, self.handle.len(), self.handle.len())?;
+        for index in start..stop {
+            if let Some(item) = self.handle.get(index)
+                && self.info.borrow(py).target.matches(py, item, value)?
+            {
+                return Ok(index);
+            }
+        }
+        Err(PyValueError::new_err("value is not in sequence"))
+    }
+
+    fn __richcmp__(
+        slf: PyRef<'_, Self>,
+        other: &Bound<'_, PyAny>,
+        op: CompareOp,
+    ) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            return Ok(py.NotImplemented());
+        }
+        let handle = slf.handle.clone();
+        let instance = slf.into_pyobject(py)?;
+        if !instance.get_type().is(other.get_type()) {
+            return Ok(py.NotImplemented());
+        }
+        let other: PyRef<'_, Self> = other.extract()?;
+        equality_result(py, op, handle.content_eq(&other.handle))
+    }
+
     fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let len = isize::try_from(self.handle.len())
             .map_err(|error| PyIndexError::new_err(error.to_string()))?;
@@ -125,7 +201,13 @@ impl NativeList {
             }
             return Ok(result.unbind().into_any());
         }
-        let index: isize = index.extract()?;
+        let index: isize = index.extract().map_err(|error: PyErr| {
+            if error.is_instance_of::<PyOverflowError>(py) {
+                PyIndexError::new_err("list index out of range")
+            } else {
+                error
+            }
+        })?;
         let normalized = if index < 0 { len + index } else { index };
         if !(0..len).contains(&normalized) {
             return Err(PyIndexError::new_err("list index out of range"));
@@ -144,6 +226,30 @@ impl NativeList {
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.info)
     }
+}
+
+/// Normalize arbitrary Python integer bounds without overflowing the native index type.
+fn search_bound(
+    py: Python<'_>,
+    value: Option<&Bound<'_, PyAny>>,
+    len: usize,
+    default: usize,
+) -> PyResult<usize> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    let integer = py.import("operator")?.call_method1("index", (value,))?;
+    let len_signed =
+        isize::try_from(len).map_err(|error| PyIndexError::new_err(error.to_string()))?;
+    let Ok(position) = integer.extract::<isize>() else {
+        return Ok(if integer.lt(0)? { 0 } else { len });
+    };
+    let position = if position < 0 {
+        len_signed.saturating_add(position)
+    } else {
+        position
+    };
+    Ok(usize::try_from(position.clamp(0, len_signed)).unwrap_or(0))
 }
 
 #[pyclass(extends=NativeList, subclass, frozen, skip_from_py_object)]
@@ -248,6 +354,8 @@ pub(crate) struct NativeIterator {
     handle: ListHandle,
     info: Py<CollectionInfo>,
     index: usize,
+    end: usize,
+    reverse: bool,
     kind: Iteration,
 }
 
@@ -258,10 +366,20 @@ impl NativeIterator {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let Some(item_value) = self.handle.get(self.index) else {
+        if self.index >= self.end {
+            return Ok(None);
+        }
+        let index = if self.reverse {
+            self.end -= 1;
+            self.end
+        } else {
+            let index = self.index;
+            self.index += 1;
+            index
+        };
+        let Some(item_value) = self.handle.get(index) else {
             return Ok(None);
         };
-        self.index += 1;
         let info = self.info.borrow(py);
         if matches!(self.kind, Iteration::Values) {
             return info.target.convert(py, Some(item_value)).map(Some);
@@ -298,6 +416,10 @@ impl NativeIterator {
     )]
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.info)
+    }
+
+    fn __length_hint__(&self) -> usize {
+        self.end.saturating_sub(self.index)
     }
 }
 

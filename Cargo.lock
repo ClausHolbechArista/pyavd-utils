@@ -2411,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "validated-data"
-version = "0.0.10"
+version = "0.0.12"
 dependencies = [
  "avdschema",
  "derive_more",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "validated-data-macros"
-version = "0.0.10"
+version = "0.0.12"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "validated-data-py"
-version = "0.0.10"
+version = "0.0.12"
 dependencies = [
  "pyo3",
  "serde_json",

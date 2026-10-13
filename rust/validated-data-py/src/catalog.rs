@@ -131,6 +131,7 @@ pub(crate) fn install_root(
     let models = reachable_models(root)?;
     let py = module.py();
     let type_factory = py.import("builtins")?.getattr("type")?;
+    let sequence = py.import("collections.abc")?.getattr("Sequence")?;
     let module_name: String = module.name()?.extract()?;
     // Create every ordinary type first so schema order and forward references do not matter.
     for model in models.values() {
@@ -142,10 +143,15 @@ pub(crate) fn install_root(
         let namespace = PyDict::new(py);
         namespace.set_item("__module__", &module_name)?;
         namespace.set_item("__slots__", ())?;
-        module.add(
-            model.name,
-            type_factory.call1((model.name, (base,), namespace))?,
-        )?;
+        // Structural equality must not coexist with the inherited identity hash.
+        namespace.set_item("__hash__", py.None())?;
+        let class = type_factory.call1((model.name, (base,), namespace))?;
+        if model.descriptor.kind == ModelKind::List && !model.descriptor.indexed {
+            // Register only positional generated types, not their shared NativeList base:
+            // keyed types also inherit that base but have incompatible indexing semantics.
+            sequence.call_method1("register", (&class,))?;
+        }
+        module.add(model.name, class)?;
     }
     for model in models.values() {
         if let Some(name) = model.keyed_item_name {

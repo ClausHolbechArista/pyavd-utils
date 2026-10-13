@@ -551,6 +551,15 @@ pub struct ValueHandle {
 }
 
 impl ValueHandle {
+    /// Compare archived contents without materializing values or collections.
+    ///
+    /// Dictionary key order is ignored; list order, absent keys, explicit nulls, and unknown
+    /// payloads are preserved. Integer representations compare by value, while booleans remain
+    /// distinct from integers. This checks data, not the nominal identity of a generated model.
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.view().content_eq(other.view())
+    }
+
     /// Explicitly materialize the payload as JSON for serialization or legacy merge boundaries.
     ///
     /// Ordinary view access never calls this conversion.
@@ -614,6 +623,91 @@ pub struct ValueView<'a> {
 }
 
 impl<'a> ValueView<'a> {
+    fn content_eq(self, other: ValueView<'_>) -> bool {
+        // An explicit worklist avoids recursion for deeply nested custom payloads. It contains
+        // borrowed node tokens only; no archived strings or collection contents are copied.
+        let mut pending = vec![(self, other)];
+        while let Some((left, right)) = pending.pop() {
+            if left.same_node(right) {
+                continue;
+            }
+            let equal = match (left.node(), right.node()) {
+                (ArchivedValueNode::Null, ArchivedValueNode::Null) => true,
+                (ArchivedValueNode::Bool(left), ArchivedValueNode::Bool(right)) => left == right,
+                (ArchivedValueNode::I64(left), ArchivedValueNode::I64(right)) => left == right,
+                (ArchivedValueNode::U64(left), ArchivedValueNode::U64(right)) => left == right,
+                (ArchivedValueNode::I64(left), ArchivedValueNode::U64(right)) => {
+                    u64::try_from(left.to_native()).is_ok_and(|value| value == right.to_native())
+                }
+                (ArchivedValueNode::U64(left), ArchivedValueNode::I64(right)) => {
+                    u64::try_from(right.to_native()).is_ok_and(|value| value == left.to_native())
+                }
+                (ArchivedValueNode::String(_), ArchivedValueNode::String(_)) => {
+                    left.as_str() == right.as_str()
+                }
+                (ArchivedValueNode::List { .. }, ArchivedValueNode::List { .. }) => {
+                    let left = left
+                        .as_list()
+                        .unwrap_or_else(|| crate::modes::invariant_failure());
+                    let right = right
+                        .as_list()
+                        .unwrap_or_else(|| crate::modes::invariant_failure());
+                    if left.len() != right.len() {
+                        return false;
+                    }
+                    for index in 0..left.len() {
+                        pending.push((
+                            left.get(index)
+                                .unwrap_or_else(|| crate::modes::invariant_failure()),
+                            right
+                                .get(index)
+                                .unwrap_or_else(|| crate::modes::invariant_failure()),
+                        ));
+                    }
+                    true
+                }
+                (ArchivedValueNode::Dict { .. }, ArchivedValueNode::Dict { .. }) => {
+                    let left = left
+                        .as_dict()
+                        .unwrap_or_else(|| crate::modes::invariant_failure());
+                    let right = right
+                        .as_dict()
+                        .unwrap_or_else(|| crate::modes::invariant_failure());
+                    if left.range().1 != right.range().1 {
+                        return false;
+                    }
+                    if left
+                        .entries()
+                        .zip(right.entries())
+                        .all(|((left, _), (right, _))| left == right)
+                    {
+                        pending.extend(
+                            left.entries()
+                                .zip(right.entries())
+                                .map(|((_, left), (_, right))| (left, right)),
+                        );
+                    } else {
+                        // Use a borrowed-key index only when input ordering differs. Repeated
+                        // linear key lookups would make large custom dictionaries quadratic.
+                        let right: HashMap<_, _> = right.entries().collect();
+                        for (key, value) in left.entries() {
+                            let Some(other_value) = right.get(key) else {
+                                return false;
+                            };
+                            pending.push((value, *other_value));
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if !equal {
+                return false;
+            }
+        }
+        true
+    }
+
     fn to_owned_value(self) -> Value {
         match self.node() {
             ArchivedValueNode::Null => Value::Null,
@@ -721,6 +815,23 @@ impl<'a> ValueView<'a> {
 pub struct DictView<'a>(ValueView<'a>);
 
 impl<'a> DictView<'a> {
+    fn entries(self) -> impl Iterator<Item = (&'a str, ValueView<'a>)> {
+        let (start, len) = self.range();
+        let archive = self.0.store.archived();
+        archive
+            .map_slots
+            .get(start..start + len)
+            .unwrap_or_else(|| crate::modes::invariant_failure())
+            .iter()
+            .map(move |slot| {
+                let key = archive
+                    .strings
+                    .get(usize::try_from(slot.key.0.to_native()).unwrap_or(usize::MAX))
+                    .unwrap_or_else(|| crate::modes::invariant_failure());
+                (key.as_ref(), self.0.store.value(slot.value))
+            })
+    }
+
     fn range(self) -> (usize, usize) {
         let ArchivedValueNode::Dict { start, len, .. } = self.0.node() else {
             return (0, 0);
@@ -770,6 +881,16 @@ impl<'a> DictView<'a> {
 pub struct DictHandle(ValueHandle);
 
 impl DictHandle {
+    /// Whether no dictionary keys were supplied, including custom or unknown keys.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Compare complete dictionary contents without materializing them. Key order is ignored.
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.0.content_eq(&other.0)
+    }
+
     /// Look up a statically generated field slot.
     pub fn field(&self, slot: u32) -> Option<ValueHandle> {
         self.0
@@ -963,6 +1084,11 @@ impl<'a> ListView<'a> {
 pub struct ListHandle(ValueHandle);
 
 impl ListHandle {
+    /// Compare ordered list contents without materializing them.
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.0.content_eq(&other.0)
+    }
+
     /// Number of archived items.
     pub fn len(&self) -> usize {
         self.0.view().as_list().map_or(0, ListView::len)

@@ -26,6 +26,49 @@ def _combined_rust_source(root: Path) -> str:
     return "\n".join(_rust_sources(root).values())
 
 
+def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path: Path) -> None:
+    """Promise Sequence only where integer indexing denotes a position, not a primary key."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps(
+            {
+                "fixture": {
+                    "type": "dict",
+                    "keys": {
+                        "empty": {"type": "dict"},
+                        "values": {"type": "list", "items": {"type": "str"}},
+                        "entries": {
+                            "type": "list",
+                            "primary_key": "id",
+                            "items": {
+                                "type": "dict",
+                                "keys": {"id": {"type": "int"}},
+                            },
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    rust, pyi = tmp_path / "models.rs", tmp_path / "models.pyi"
+    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    classes = {node.name: node for node in ast.parse(pyi.read_text(encoding="UTF-8")).body if isinstance(node, ast.ClassDef)}
+    positional = classes["FixtureValuesList"]
+    keyed = classes["FixtureEntriesList"]
+    assert ast.unparse(positional.bases[0]) == "Sequence[str | None]"
+    assert not keyed.bases
+    for model in [positional, keyed]:
+        methods = {node.name: node for node in model.body if isinstance(node, ast.FunctionDef)}
+        assert {"__len__", "__iter__", "__reversed__", "__contains__", "count", "index", "__eq__"} <= methods.keys()
+        assert ast.unparse(methods["count"].args.args[1].annotation) == "object"
+    key_getitem = next(node for node in keyed.body if isinstance(node, ast.FunctionDef) and node.name == "__getitem__")
+    assert key_getitem.args.args[1].arg == "key"
+    assert ast.unparse(key_getitem.args.args[1].annotation) == "int"
+    empty_methods = {node.name for node in classes["FixtureEmpty"].body if isinstance(node, ast.FunctionDef)}
+    assert {"__bool__", "__eq__"} <= empty_methods
+
+
 def test_generate_validated_data_models(tmp_path: Path) -> None:
     """Generate nominal Rust views and Python declarations from the shared fixture."""
     rust = tmp_path / "models.rs"
@@ -305,7 +348,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert isinstance(name_property.returns, ast.Name)
     assert name_property.returns.id == "str"
     sequence_methods = {node.name for node in classes["FixtureDuplicatesList"].body if isinstance(node, ast.FunctionDef)}
-    assert sequence_methods == {"__iter__", "__getitem__"}
+    assert sequence_methods == {"__iter__", "__getitem__", "__len__", "__contains__", "__reversed__", "__eq__", "count", "index"}
     assert 'python(name = "FixtureDuplicatesList", item_name = "FixtureDuplicatesListKeyedItem")' in rust_source
     assert 'python(name = "Shared")' in rust_source
     assert "indexed_list" not in rust_source

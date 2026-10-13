@@ -73,6 +73,33 @@ fn open(value: &serde_json::Value) -> DataStore {
 }
 
 #[test]
+fn archived_content_equality_preserves_states_and_custom_values() {
+    let left = open(&serde_json::json!({"custom": {"a": [1, null, true], "b": "text"}}));
+    let reordered = open(&serde_json::json!({"custom": {"b": "text", "a": [1, null, true]}}));
+    let left = std::sync::Arc::new(left).root_handle();
+    let reordered = std::sync::Arc::new(reordered).root_handle();
+    assert!(left.content_eq(&left));
+    assert!(left.content_eq(&reordered));
+    for different in [
+        serde_json::json!({"custom": {"a": [1, true, null], "b": "text"}}),
+        serde_json::json!({"custom": {"a": [1, null, 1], "b": "text"}}),
+        serde_json::json!({"custom": {"a": [1, null, true], "b": null}}),
+        serde_json::json!({"custom": {"a": [1, null, true]}}),
+        serde_json::json!({"custom": {"a": [1, null, true], "b": "text", "extra": null}}),
+    ] {
+        let different = std::sync::Arc::new(open(&different)).root_handle();
+        assert!(!left.content_eq(&different));
+        assert!(!different.content_eq(&left));
+    }
+    let large = std::sync::Arc::new(open(&serde_json::json!({"custom": u64::MAX}))).root_handle();
+    let same_large =
+        std::sync::Arc::new(open(&serde_json::json!({"custom": u64::MAX}))).root_handle();
+    let negative = std::sync::Arc::new(open(&serde_json::json!({"custom": -1}))).root_handle();
+    assert!(large.content_eq(&same_large));
+    assert!(!large.content_eq(&negative));
+}
+
+#[test]
 fn required_fields_are_infallible_and_relaxed_children_keep_their_mode() {
     let store = open(&serde_json::json!({
         "name": "leaf1", "enabled": null,

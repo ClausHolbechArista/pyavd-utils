@@ -4,9 +4,10 @@
 
 //! Native property descriptors, scalar conversion, and archive-owner-preserving wrappers.
 
+use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyAttributeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyModule, PyString, PyType};
+use pyo3::types::{PyBool, PyInt, PyModule, PyString, PyType};
 use pyo3::{PyTraverseError, PyVisit};
 use validated_data::{DictHandle, ValueHandle};
 
@@ -46,6 +47,38 @@ impl NativeDict {
             .map(Self)
             .ok_or_else(|| PyTypeError::new_err("value is not a dictionary"))
     }
+
+    fn __bool__(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    fn __richcmp__(
+        slf: PyRef<'_, Self>,
+        other: &Bound<'_, PyAny>,
+        op: CompareOp,
+    ) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            return Ok(py.NotImplemented());
+        }
+        let handle = slf.0.clone();
+        let instance = slf.into_pyobject(py)?;
+        if !instance.get_type().is(other.get_type()) {
+            return Ok(py.NotImplemented());
+        }
+        let other: PyRef<'_, Self> = other.extract()?;
+        equality_result(py, op, handle.content_eq(&other.0))
+    }
+}
+
+/// Convert a same-model structural comparison into Python's equality result.
+pub(crate) fn equality_result(py: Python<'_>, op: CompareOp, equal: bool) -> PyResult<Py<PyAny>> {
+    let result = match op {
+        CompareOp::Eq => equal,
+        CompareOp::Ne => !equal,
+        _ => return Ok(py.NotImplemented()),
+    };
+    Ok(result.into_pyobject(py)?.to_owned().unbind().into_any())
 }
 
 /// Cached interpreter-local conversion objects. All references are visited by owning classes.
@@ -56,6 +89,44 @@ pub(crate) struct ResolvedTarget {
 }
 
 impl ResolvedTarget {
+    /// Compare a sequence item without allocating a wrapper for another native dictionary or
+    /// a built-in scalar. Custom Python comparators still use the normal rich-comparison protocol.
+    pub(crate) fn matches(
+        &self,
+        py: Python<'_>,
+        value: ValueHandle,
+        other: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        if let Some(class) = &self.class {
+            if other.get_type().is(class.bind(py))
+                && let Ok(other) = other.extract::<PyRef<'_, NativeDict>>()
+                && let Some(value) = value.as_dict()
+            {
+                return Ok(value.content_eq(other.handle()));
+            }
+        } else {
+            if other.get_type().is(py.get_type::<PyString>())
+                && let Some(value) = value.as_str()
+            {
+                // Python permits unpaired surrogates, whereas the archive stores UTF-8.
+                // Fall back to Python comparison if the query has no UTF-8 representation.
+                if let Ok(other) = other.cast::<PyString>()?.to_str() {
+                    return Ok(value == other);
+                }
+            }
+            if (other.get_type().is(py.get_type::<PyInt>())
+                || other.get_type().is(py.get_type::<PyBool>()))
+                && let Some(value) = value.as_i64().or_else(|| value.as_bool().map(i64::from))
+            {
+                return Ok(other.extract::<i64>().ok() == Some(value));
+            }
+            if value.is_null() && other.is_none() {
+                return Ok(true);
+            }
+        }
+        self.convert(py, Some(value))?.bind(py).eq(other)
+    }
+
     pub(crate) fn undefined(&self, py: Python<'_>) -> Py<PyAny> {
         self.undefined.clone_ref(py)
     }

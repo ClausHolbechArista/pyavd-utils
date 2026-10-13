@@ -13,6 +13,18 @@
 //! Registration is interpreter-local. Descriptors cache child types and the undefined singleton;
 //! their Python references participate in cyclic garbage collection. Values are converted only
 //! when accessed. Child wrappers retain the mmap owner and do not copy collections.
+//!
+//! Positional lists implement the read-only Python sequence protocol. Indexed lists instead
+//! index and test membership by primary key; they iterate values and support positional
+//! `count`, `index`, and reverse iteration without claiming to be sequences. Dictionary models
+//! expose schema attributes, not the general Python mapping protocol. Their truth value reflects
+//! whether the archive contains any keys, including custom keys.
+//!
+//! Model equality requires the same generated Python type and compares archived contents,
+//! including custom data. Dictionary order is ignored and list order is significant; booleans
+//! and integers are distinct in structural comparisons. These immutable models are unhashable.
+//! Equality between different archive nodes can traverse the entire compared subtree, but does
+//! not materialize it in Python. Sequence searches follow Python scalar comparison semantics.
 
 mod catalog;
 mod collections;
