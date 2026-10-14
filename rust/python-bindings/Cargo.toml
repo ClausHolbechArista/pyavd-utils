@@ -12,7 +12,6 @@ pyo3-build-config = { workspace = true }
 
 [dev-dependencies]
 avdschema = { path = "../avdschema", features = ["dump_load_files"] }
-criterion = { version = "=0.8.2" }
 test_schema_store = { path = "../test_schema_store" }
 
 [dependencies]
@@ -40,7 +39,3 @@ simple-7 = ["dep:passwords", "passwords/simple-7"]
 
 [lib]
 crate-type = ["cdylib", "lib"]
-
-[[bench]]
-name = "performance"
-harness = false
