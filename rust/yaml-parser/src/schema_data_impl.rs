@@ -4,9 +4,9 @@
 
 use std::borrow::Cow;
 
-use avdschema::SchemaDataMapping;
-use avdschema::SchemaDataSequence;
-use avdschema::SchemaDataValue;
+use schema_data::SchemaDataMapping;
+use schema_data::SchemaDataSequence;
+use schema_data::SchemaDataValue;
 
 use crate::MappingPair;
 use crate::SequenceItem;
@@ -114,13 +114,13 @@ impl<'a, 'input: 'a> SchemaDataSequence<'a> for YamlSequence<'a, 'input> {
 mod tests {
     use std::borrow::Cow;
 
-    use avdschema::SchemaDataMapping as _;
-    use avdschema::SchemaDataSequence as _;
-    use avdschema::SchemaDataValue as _;
     use avdschema::SchemaView;
     use avdschema::Store;
     use avdschema::StoreSource;
     use avdschema::resolve_dynamic_keys;
+    use schema_data::SchemaDataMapping as _;
+    use schema_data::SchemaDataSequence as _;
+    use schema_data::SchemaDataValue as _;
     use serde_yaml::from_str;
 
     use super::YamlMapping;
