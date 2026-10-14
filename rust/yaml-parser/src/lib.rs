@@ -181,6 +181,8 @@ mod value;
 
 #[cfg(feature = "serde")]
 mod ast_to_events;
+#[cfg(feature = "serde")]
+mod string_style;
 
 pub mod writer;
 
