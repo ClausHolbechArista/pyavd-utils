@@ -20,11 +20,11 @@ fn assert_string_preserved(input: &str, yaml: &str) {
     let parser_decoded: String =
         from_str(yaml).expect("yaml-parser should read the emitted string");
     assert_eq!(parser_decoded, input, "string changed in YAML {yaml:?}");
-    let reference_decoded: serde_yaml::Value =
-        serde_yaml::from_str(yaml).expect("the reference reader should accept the emitted YAML");
+    let reference_decoded: yaml_serde::Value =
+        yaml_serde::from_str(yaml).expect("the reference reader should accept the emitted YAML");
     assert_eq!(
         reference_decoded,
-        serde_yaml::Value::String(input.to_owned()),
+        yaml_serde::Value::String(input.to_owned()),
         "string type or content changed in YAML {yaml:?}"
     );
 }
@@ -191,7 +191,7 @@ fn string_types_survive_as_mapping_keys_values_and_sequence_items() {
         from_str(&yaml).expect("mapping should deserialize");
     assert_eq!(parser_mapping, mapping);
     let reference_mapping: BTreeMap<String, String> =
-        serde_yaml::from_str(&yaml).expect("reference mapping should deserialize");
+        yaml_serde::from_str(&yaml).expect("reference mapping should deserialize");
     assert_eq!(reference_mapping, mapping);
 
     let items = vec![
@@ -206,6 +206,6 @@ fn string_types_survive_as_mapping_keys_values_and_sequence_items() {
     let parser_items: Vec<String> = from_str(&sequence_yaml).expect("sequence should deserialize");
     assert_eq!(parser_items, items);
     let reference_items: Vec<String> =
-        serde_yaml::from_str(&sequence_yaml).expect("reference sequence should deserialize");
+        yaml_serde::from_str(&sequence_yaml).expect("reference sequence should deserialize");
     assert_eq!(reference_items, items);
 }

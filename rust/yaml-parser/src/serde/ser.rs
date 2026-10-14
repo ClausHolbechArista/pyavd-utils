@@ -614,7 +614,7 @@ mod tests {
             let parser_items: Vec<Option<Entry>> = crate::serde::from_str(&yaml)
                 .expect("yaml-parser should preserve null sequence items");
             assert_eq!(parser_items, items);
-            let reference_items: Vec<Option<Entry>> = serde_yaml::from_str(&yaml)
+            let reference_items: Vec<Option<Entry>> = yaml_serde::from_str(&yaml)
                 .expect("the reference reader should preserve null sequence items");
             assert_eq!(reference_items, items);
         }
