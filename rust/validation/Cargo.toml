@@ -11,6 +11,7 @@ workspace = true
 avdschema = { path = "../avdschema", default-features = false }
 derive_more = { workspace = true, features = ["display", "from"] }
 log = { workspace = true }
+schema-data = { path = "../schema-data" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = [
     "arbitrary_precision", # To support very big numbers
