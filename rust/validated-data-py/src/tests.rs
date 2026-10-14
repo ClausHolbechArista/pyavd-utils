@@ -133,6 +133,11 @@ fn collection_protocols_match_the_typing_contract() -> PyResult<()> {
         );
         assert!(
             module
+                .getattr("_List")?
+                .is(py.get_type::<crate::collections::NativeList>())
+        );
+        assert!(
+            module
                 .getattr("_IndexedList")?
                 .is(py.get_type::<crate::collections::NativeIndexedList>())
         );

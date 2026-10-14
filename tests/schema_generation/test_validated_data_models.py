@@ -68,7 +68,9 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
     classes = {node.name: node for node in ast.parse(pyi.read_text(encoding="UTF-8")).body if isinstance(node, ast.ClassDef)}
     positional = classes["FixtureValuesList"]
     keyed = classes["FixtureEntriesList"]
-    assert [ast.unparse(base) for base in positional.bases] == ["_Collection[str | None]", "Sequence[str | None]"]
+    assert [ast.unparse(base) for base in positional.bases] == ["_List[str | None]"]
+    assert [ast.unparse(base) for base in classes["_List"].bases] == ["_Collection[_T_co]", "Sequence[_T_co]"]
+    assert not any(isinstance(node, ast.FunctionDef) for node in classes["_List"].body)
     assert [ast.unparse(base) for base in keyed.bases] == ["_IndexedList[int, FixtureEntriesListIndexedItem]"]
     collection_methods = {node.name: node for node in classes["_Collection"].body if isinstance(node, ast.FunctionDef)}
     assert {"__len__", "__iter__", "__reversed__", "count", "index", "__eq__"} == collection_methods.keys()
@@ -119,7 +121,7 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     assert "class SchemaGenerationFixtureInterfaceProfilesList(_IndexedList[str, SchemaGenerationFixtureInterfaceProfilesListIndexedItem]):" in pyi_source
     assert "class SchemaGenerationFixture(_Model):" in pyi_source
     assert "class StrValue:" not in pyi_source
-    assert "Sequence[str | None]" in pyi_source
+    assert "_List[str | None]" in pyi_source
     assert "-> str | UndefinedType | None" in pyi_source
     assert not (tmp_path / "models.py").exists()
     ast.parse(pyi_source)
@@ -318,7 +320,7 @@ def test_validation_modes_preserve_reuse_and_python_presence_contracts(tmp_path:
     assert "def name(self) -> str:" in pyi_source
     assert "def enabled(self) -> bool | UndefinedType | None:" in pyi_source
     assert "class FixtureEntriesListIndexedItem(FixtureEntriesItems):" in pyi_source
-    assert "class FixtureNumbersList(_Collection[int], Sequence[int]):" in pyi_source
+    assert "class FixtureNumbersList(_List[int]):" in pyi_source
     root_class = next(node for node in ast.parse(pyi_source).body if isinstance(node, ast.ClassDef) and node.name == "Fixture")
     properties = [node.name for node in root_class.body if isinstance(node, ast.FunctionDef)]
     assert len(properties) == len(set(properties))
@@ -356,7 +358,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
     assert "pub name: ::validated_data::Field<&'a str>" in rust_source
     pyi_source = pyi.read_text(encoding="UTF-8")
-    assert "class FixtureDuplicatesList(_Collection[FixtureDuplicatesListKeyedItem], Sequence[FixtureDuplicatesListKeyedItem]):" in pyi_source
+    assert "class FixtureDuplicatesList(_List[FixtureDuplicatesListKeyedItem]):" in pyi_source
     assert "class FixtureDuplicatesListKeyedItem(Shared):" in pyi_source
     assert "def name(self) -> str | UndefinedType | None:" in pyi_source
     classes = {node.name: node for node in ast.parse(pyi_source).body if isinstance(node, ast.ClassDef)}
@@ -367,8 +369,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     sequence_methods = {node.name for node in classes["FixtureDuplicatesList"].body if isinstance(node, ast.FunctionDef)}
     assert sequence_methods == set()
     assert [ast.unparse(base) for base in classes["FixtureDuplicatesList"].bases] == [
-        "_Collection[FixtureDuplicatesListKeyedItem]",
-        "Sequence[FixtureDuplicatesListKeyedItem]",
+        "_List[FixtureDuplicatesListKeyedItem]",
     ]
     collection_methods = {node.name for node in classes["_Collection"].body if isinstance(node, ast.FunctionDef)}
     assert {"__iter__", "__len__", "__reversed__", "__eq__", "count", "index"} == collection_methods

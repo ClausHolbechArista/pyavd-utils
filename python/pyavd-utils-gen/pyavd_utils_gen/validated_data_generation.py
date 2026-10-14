@@ -653,6 +653,9 @@ class _Collection(Generic[_T_co]):
     def index(self, value: object, start: int | None = None, stop: int | None = None) -> int:
         """Find the first equal item position in the bounded range; raise ValueError if absent."""
 
+class _List(_Collection[_T_co], Sequence[_T_co]):
+    """Positional collection; indexing, slicing, and membership follow the Sequence contract."""
+
 class _IndexedList(_Collection[_T_co], Generic[_K, _T_co]):
     """Key-indexed collection, not a Sequence; iteration and positional searches operate on values."""
     def __contains__(self, key: _K) -> bool: ...
@@ -710,7 +713,7 @@ def _render_pyi(
             base_item_type = _keyed_item_name(model, names)
         item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
         if not model["indexed"]:
-            definitions.append(f"class {name}(_Collection[{item_type}], Sequence[{item_type}]): ...")
+            definitions.append(f"class {name}(_List[{item_type}]): ...")
             continue
         if len(primary_key_fields) != 1:
             msg = f"composite primary keys are not supported yet for model {model_id}"
