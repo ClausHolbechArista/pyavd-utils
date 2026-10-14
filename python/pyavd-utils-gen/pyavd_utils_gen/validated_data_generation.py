@@ -629,8 +629,8 @@ def _render_pyi_bases() -> str:
     Describe native base types once, with generics for schema-specific item and key types.
 
     The collection base exposes only operations shared by positional and indexed lists.
-    Positional models additionally satisfy Sequence through native ABC registration and declare
-    their slice overload locally, since slices return Python lists rather than model views.
+    Positional models additionally satisfy Sequence through native ABC registration and inherit
+    its indexing contract. Slices are typed as sequences without exposing their concrete container.
     """
     return '''_T_co = TypeVar("_T_co", covariant=True)
 _K = TypeVar("_K")
@@ -710,16 +710,7 @@ def _render_pyi(
             base_item_type = _keyed_item_name(model, names)
         item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
         if not model["indexed"]:
-            body = [f"class {name}(_Collection[{item_type}], Sequence[{item_type}]):\n"]
-            body.extend(
-                [
-                    "    @overload\n",
-                    f"    def __getitem__(self, index: int) -> {item_type}: ...\n",
-                    "    @overload\n",
-                    f"    def __getitem__(self, index: slice) -> list[{item_type}]: ...\n",
-                ]
-            )
-            definitions.append("".join(body).rstrip())
+            definitions.append(f"class {name}(_Collection[{item_type}], Sequence[{item_type}]): ...")
             continue
         if len(primary_key_fields) != 1:
             msg = f"composite primary keys are not supported yet for model {model_id}"

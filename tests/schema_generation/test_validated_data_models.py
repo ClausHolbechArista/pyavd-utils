@@ -74,12 +74,7 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
     assert {"__len__", "__iter__", "__reversed__", "count", "index", "__eq__"} == collection_methods.keys()
     assert ast.unparse(collection_methods["count"].args.args[1].annotation) == "object"
     assert ast.unparse(collection_methods["__iter__"].returns) == "Iterator[_T_co]"
-    slice_getitem = next(
-        node
-        for node in positional.body
-        if isinstance(node, ast.FunctionDef) and isinstance(node.args.args[1].annotation, ast.Name) and node.args.args[1].annotation.id == "slice"
-    )
-    assert ast.unparse(slice_getitem.returns) == "list[str | None]"
+    assert not any(isinstance(node, ast.FunctionDef) for node in positional.body)
     indexed_methods = {node.name: node for node in classes["_IndexedList"].body if isinstance(node, ast.FunctionDef)}
     assert {"__contains__", "__getitem__", "get", "keys", "values", "items"} == indexed_methods.keys()
     key_getitem = indexed_methods["__getitem__"]
@@ -370,7 +365,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert isinstance(name_property.returns, ast.Name)
     assert name_property.returns.id == "str"
     sequence_methods = {node.name for node in classes["FixtureDuplicatesList"].body if isinstance(node, ast.FunctionDef)}
-    assert sequence_methods == {"__getitem__"}
+    assert sequence_methods == set()
     assert [ast.unparse(base) for base in classes["FixtureDuplicatesList"].bases] == [
         "_Collection[FixtureDuplicatesListKeyedItem]",
         "Sequence[FixtureDuplicatesListKeyedItem]",
