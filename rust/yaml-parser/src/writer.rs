@@ -527,7 +527,8 @@ impl<'a, 'input, W: Write> WriterState<'a, 'input, W> {
                                 && mapping_props.is_empty()
                                 && matches!(
                                     self.events.get(self.pos.saturating_add(1)),
-                                    Some(Event::Scalar { .. })
+                                    Some(Event::Scalar { properties, .. })
+                                        if Self::properties_or_empty(properties.as_deref()).is_empty()
                                 )
                             {
                                 self.write_block_mapping(mapping_props, true)?;
