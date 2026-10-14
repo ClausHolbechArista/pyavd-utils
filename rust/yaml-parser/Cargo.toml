@@ -19,10 +19,8 @@ serde_yaml = { workspace = true } # Reference backend for compatibility tests an
 
 [features]
 default = []
-# Compatibility feature names for the storage-neutral schema-data integration.
-# Consumers select avdschema's own defaults directly on their avdschema dependency.
-avdschema = ["avdschema-core"]
-avdschema-core = ["dep:schema-data"]
+# Optional storage-neutral data views for schema navigation and validation.
+schema-data = ["dep:schema-data"]
 serde = ["dep:serde"]
 
 [[bench]]
