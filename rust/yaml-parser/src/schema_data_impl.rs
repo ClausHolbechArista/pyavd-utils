@@ -121,7 +121,6 @@ mod tests {
     use schema_data::SchemaDataMapping as _;
     use schema_data::SchemaDataSequence as _;
     use schema_data::SchemaDataValue as _;
-    use serde_yaml::from_str;
 
     use super::YamlMapping;
     use super::YamlSequence;
@@ -132,6 +131,7 @@ mod tests {
     use crate::Span;
     use crate::Value;
     use crate::parse;
+    use crate::serde::from_str;
 
     fn string_value(value: &'static str) -> Value<'static> {
         Value::String(Cow::Borrowed(value))
