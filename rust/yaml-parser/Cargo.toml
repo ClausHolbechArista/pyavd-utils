@@ -15,7 +15,7 @@ serde = { workspace = true, optional = true }
 avdschema = { path = "../avdschema" }
 criterion = "=0.8.2" # Used for benchmarking
 saphyr = "=0.1.0"   # Used for benchmarking
-serde_yaml = { workspace = true } # Reference backend for compatibility tests and benchmarks
+yaml_serde = { workspace = true } # Reference backend for compatibility tests and benchmarks
 
 [features]
 default = []

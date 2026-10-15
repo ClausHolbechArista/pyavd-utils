@@ -11,13 +11,13 @@
 )]
 #![allow(clippy::expect_used, reason = "expect is acceptable in tests")]
 
-use serde_yaml::Value;
+use yaml_serde::Value;
 
 fn assert_document(input: &str, expected_yaml: &str) {
     let expected: Value =
-        serde_yaml::from_str(expected_yaml).expect("the expected document should be valid YAML");
+        yaml_serde::from_str(expected_yaml).expect("the expected document should be valid YAML");
     let reference: Value =
-        serde_yaml::from_str(input).expect("the reference reader should accept this YAML");
+        yaml_serde::from_str(input).expect("the reference reader should accept this YAML");
     assert_eq!(
         reference, expected,
         "the reference reader must agree on plain scalar semantics"
