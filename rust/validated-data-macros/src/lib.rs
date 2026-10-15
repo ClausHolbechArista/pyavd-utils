@@ -47,7 +47,8 @@ mod tests;
 /// `list, primary_key(...)` permits duplicate keys and exposes positions only; `indexed_list`
 /// additionally exposes lookup by a unique key.
 ///
-/// `python(name = "...")` opts a model into native Python registration. Keyed lists additionally
+/// `python(name = "...")` opts a model into native Python registration. Dotted names place the
+/// class inside its public hierarchy, such as `AVDDesign.DevicesItemBase`. Keyed lists additionally
 /// declare `item_name = "..."` for their contextual item identity. The declaration emits a
 /// `validated_data_py::PythonModel` implementation whose fields reference the original Rust
 /// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields are

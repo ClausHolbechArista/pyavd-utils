@@ -6,7 +6,8 @@
 //!
 //! The data-view declaration supplies both the Rust model descriptor and its Python exposure.
 //! Registration follows only exposed relationships from the selected root, allocates all ordinary
-//! types before contextual key identities, and finally installs cached native field descriptors.
+//! types before contextual key identities, attaches the public class hierarchy, and finally installs
+//! cached native field descriptors. Qualified names describe exposure, not additional data models.
 //! No schema traversal or per-field generated Python function is needed during value access.
 
 use std::collections::BTreeMap;
@@ -47,7 +48,10 @@ pub struct FieldBinding {
 /// Python exposure of one nominal model, derived alongside its typed Rust view.
 #[derive(Clone, Copy, Debug)]
 pub struct ModelBinding {
-    /// Public, module-local Python class name.
+    /// Public Python class path relative to its module, such as `AVDDesign.DevicesItemBase`.
+    ///
+    /// Dotted paths attach existing classes to their enclosing types. Missing ancestors are
+    /// namespace-only classes for a referenced subtree, not additional archive-backed views.
     pub name: &'static str,
     /// Original model shape, field relationships, and primary-key slots.
     pub descriptor: &'static ModelDescriptor,
@@ -55,7 +59,7 @@ pub struct ModelBinding {
     pub fields: &'static [FieldBinding],
     /// Conversion for list items; absent for dictionaries and untyped lists.
     pub item: Option<Target>,
-    /// Contextual item class granting this list's primary-key presence guarantees.
+    /// Qualified contextual item class granting this list's primary-key presence guarantees.
     ///
     /// The class inherits the ordinary item class without copying its descriptors. Duplicate-key
     /// lists also use contextual items, but retain positional rather than unique-key operations.
@@ -105,6 +109,80 @@ fn reachable_models(
     Ok(models)
 }
 
+/// Resolve one public class path when preparing a descriptor or wrapping a root.
+///
+/// Field targets cache the returned type, so nested names incur no repeated lookup during access.
+pub(crate) fn resolve_python_type<'py>(
+    module: &Bound<'py, PyModule>,
+    name: &str,
+) -> PyResult<Bound<'py, PyType>> {
+    let mut value = module.clone().into_any();
+    for component in name.split('.') {
+        value = value.getattr(component)?;
+    }
+    Ok(value.cast_into::<PyType>()?)
+}
+
+/// Prepare a class's Python identity before attaching fields or enclosing namespaces.
+fn class_namespace<'py>(
+    py: Python<'py>,
+    module_name: &str,
+    qualified_name: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let namespace = PyDict::new(py);
+    namespace.set_item("__module__", module_name)?;
+    namespace.set_item("__qualname__", qualified_name)?;
+    namespace.set_item("__slots__", ())?;
+    Ok(namespace)
+}
+
+/// Attach canonical classes to their enclosing types without creating another model instance.
+///
+/// Partial cross-schema references may expose a leaf without its enclosing data models.
+/// Missing ancestors are namespace-only classes. The temporary type index is discarded after
+/// registration; the public hierarchy and cached descriptors own the interpreter-local types.
+fn attach_python_hierarchy<'py>(
+    module: &Bound<'py, PyModule>,
+    module_name: &str,
+    type_factory: &Bound<'py, PyAny>,
+    types: &mut BTreeMap<String, Bound<'py, PyType>>,
+) -> PyResult<()> {
+    let py = module.py();
+    let model_names: Vec<_> = types.keys().cloned().collect();
+    for name in model_names {
+        let mut prefix = String::new();
+        for component in name.split('.').take(name.split('.').count() - 1) {
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(component);
+            if !types.contains_key(&prefix) {
+                let namespace = class_namespace(py, module_name, &prefix)?;
+                let class = type_factory
+                    .call1((component, (), namespace))?
+                    .cast_into::<PyType>()?;
+                types.insert(prefix.clone(), class);
+            }
+        }
+    }
+    for (name, class) in types.iter() {
+        if let Some((parent, local_name)) = name.rsplit_once('.') {
+            let parent = types.get(parent).ok_or_else(|| {
+                PyValueError::new_err(format!("missing Python namespace: {parent}"))
+            })?;
+            parent.setattr(local_name, class)?;
+        } else {
+            if module.hasattr(name)? {
+                return Err(PyValueError::new_err(format!(
+                    "conflicting Python module attribute: {name}"
+                )));
+            }
+            module.add(name, class)?;
+        }
+    }
+    Ok(())
+}
+
 /// Install the Python-visible models reachable from one generated root.
 ///
 /// Shared `PyO3` classes implement dictionary/list operations and property access. Registration
@@ -142,6 +220,7 @@ pub(crate) fn install_root(
     module.add("_Collection", py.get_type::<NativeList>())?;
     module.add("_List", py.get_type::<NativeList>())?;
     module.add("_IndexedList", py.get_type::<NativeIndexedList>())?;
+    let mut types = BTreeMap::new();
     // Create every ordinary type first so schema order and forward references do not matter.
     for model in models.values() {
         let base = match model.descriptor.kind {
@@ -149,22 +228,23 @@ pub(crate) fn install_root(
             ModelKind::List if model.descriptor.indexed => py.get_type::<NativeIndexedList>(),
             ModelKind::List => py.get_type::<NativeList>(),
         };
-        let namespace = PyDict::new(py);
-        namespace.set_item("__module__", &module_name)?;
-        namespace.set_item("__slots__", ())?;
+        let namespace = class_namespace(py, &module_name, model.name)?;
         // Structural equality must not coexist with the inherited identity hash.
         namespace.set_item("__hash__", py.None())?;
-        let class = type_factory.call1((model.name, (base,), namespace))?;
+        let local_name = model.name.rsplit('.').next().unwrap_or(model.name);
+        let class = type_factory
+            .call1((local_name, (base,), namespace))?
+            .cast_into::<PyType>()?;
         if model.descriptor.kind == ModelKind::List && !model.descriptor.indexed {
             // Register only positional generated types, not their shared NativeList base:
             // keyed types also inherit that base but have incompatible indexing semantics.
             sequence.call_method1("register", (&class,))?;
         }
-        module.add(model.name, class)?;
+        types.insert(model.name.to_owned(), class);
     }
     for model in models.values() {
         if let Some(name) = model.keyed_item_name {
-            if module.hasattr(name)? {
+            if types.contains_key(name) {
                 return Err(PyValueError::new_err(format!(
                     "conflicting contextual item name: {name}"
                 )));
@@ -174,19 +254,33 @@ pub(crate) fn install_root(
                     "primary-key items require a Python dictionary model",
                 ));
             };
-            let namespace = PyDict::new(py);
-            namespace.set_item("__module__", &module_name)?;
-            namespace.set_item("__slots__", ())?;
-            module.add(
-                name,
-                type_factory.call1((name, (module.getattr(item().name)?,), namespace))?,
-            )?;
+            let namespace = class_namespace(py, &module_name, name)?;
+            let base = types
+                .get(item().name)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!("missing Python item model: {}", item().name))
+                })?
+                .clone();
+            let local_name = name.rsplit('.').next().unwrap_or(name);
+            types.insert(
+                name.to_owned(),
+                type_factory
+                    .call1((local_name, (base,), namespace))?
+                    .cast_into::<PyType>()?,
+            );
         }
     }
+    attach_python_hierarchy(module, &module_name, &type_factory, &mut types)?;
     for model in models.values() {
-        let class = module.getattr(model.name)?;
+        let class = resolve_python_type(module, model.name)?;
         if model.descriptor.kind == ModelKind::Dict {
             for field in model.fields {
+                if class.hasattr(field.name)? {
+                    return Err(PyValueError::new_err(format!(
+                        "conflicting Python property: {}.{}",
+                        model.name, field.name
+                    )));
+                }
                 class.setattr(
                     field.name,
                     Py::new(

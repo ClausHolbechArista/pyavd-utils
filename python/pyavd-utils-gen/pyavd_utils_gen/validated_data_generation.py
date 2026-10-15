@@ -1,7 +1,14 @@
 # Copyright (c) 2026 Arista Networks, Inc.
 # Use of this source code is governed by the Apache License 2.0
 # that can be found in the LICENSE file.
-"""Generate typed Rust views with native Python binding annotations and Python typing stubs."""
+"""
+Generate typed Rust views, native Python binding annotations, and nested Python typing stubs.
+
+Each schema has a public root class. Dictionary children, collections, and item classes live
+inside their source hierarchy; references retain canonical identities across schema roots.
+Primary-key collections return thin item subclasses strengthening key presence without
+changing the reusable item model or duplicating its field descriptors and data access.
+"""
 
 from __future__ import annotations
 
@@ -108,13 +115,15 @@ def generate_validated_data_models(
     """
     reused_schemas = reused_schemas or {}
     registry = build_nominal_model_registry(source, schema_name, list(reused_schemas))
+    python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
+    rust_root_names = {name: names[0] for name, names in reused_schemas.items()} | {schema_name: rust_root_name}
+    # Allocate names before projection so selected branches keep their canonical identities,
+    # even when the enclosing source model of an external reference is not itself exposed.
+    names = _model_names(list(registry["models"]), list(registry["fields"]), python_root_names)
     if root_keys is not None:
         registry = _project_registry(registry, root_keys)
     models = list(registry["models"])
     fields = list(registry["fields"])
-    python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
-    rust_root_names = {name: names[0] for name, names in reused_schemas.items()} | {schema_name: rust_root_name}
-    names = _model_names(models, python_root_names)
     root_model = int(registry["root"])
     rust_sources = _render_rust(registry, models, fields, rust_root_names, names)
     _write_rust(rust_destination, rust_sources)
@@ -122,7 +131,7 @@ def generate_validated_data_models(
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
-    """Select static root branches while preserving identities from the full registry."""
+    """Select primary root branches while retaining complete reusable schema catalogs."""
     root = int(registry["root"])
     fields_by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in registry["fields"]:
@@ -136,9 +145,9 @@ def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[st
         msg = f"unknown static root key(s) for validated-data generation: {unknown}"
         raise ValueError(msg)
 
-    selected_models = {root}
+    selected_models = {int(root_id) for root_id in registry["roots"].values()}
     selected_fields: set[int] = set()
-    pending_models = [root]
+    pending_models = sorted(selected_models)
     while pending_models:
         parent = pending_models.pop()
         for field in fields_by_parent.get(parent, []):
@@ -172,27 +181,60 @@ def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[st
     }
 
 
-def _model_names(models: list[dict[str, Any]], root_names: dict[str, str]) -> dict[int, str]:
+def _model_names(models: list[dict[str, Any]], fields: list[dict[str, Any]], root_names: dict[str, str]) -> dict[int, str]:
+    """
+    Name canonical models within their source hierarchy, independently of reference order.
+
+    Collections and their item classes are siblings. A primary-key collection owns a thin
+    ``<Collection>Item`` subclass; its reusable dictionary is named ``<Collection>ItemBase``.
+    References retain the target's canonical name rather than declaring another model.
+    Names are disambiguated within each enclosing class, including its property names.
+    """
     names: dict[int, str] = {}
-    used: set[str] = set()
-    for model in models:
+    by_path = {tuple(model["path"]): model for model in models}
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for field in fields:
+        by_parent.setdefault(int(field["parent"]), []).append(field)
+    used: dict[str, set[str]] = {}
+    properties: dict[str, set[str]] = {}
+
+    def assign(model: dict[str, Any]) -> str:
         model_id = int(model["id"])
-        schema_name = str(model["path"][0])
-        root_name = root_names[schema_name]
-        if len(model["path"]) == 1:
-            candidate = root_name
+        if model_id in names:
+            return names[model_id]
+        path = tuple(model["path"])
+        if len(path) == 1:
+            scope, candidate = "", root_names[str(path[0])]
+        elif path[-1] == "items" and path[:-1] in by_path:
+            parent = by_path[path[:-1]]
+            scope, _, collection = assign(parent).rpartition(".")
+            suffix = "ItemBase" if parent.get("primary_key_fields") else "Item"
+            candidate = collection + suffix
         else:
-            parts = [part for part in model["path"] if part != "keys"]
-            candidate = root_name + "".join(_pascal(part) for part in parts[1:])
-        if model["kind"] == "List" and not candidate.endswith("List"):
-            candidate += "List"
+            parent = by_path[path[:-2]]
+            scope, candidate = assign(parent), _pascal(str(path[-1]))
+            if not candidate or candidate[0].isdigit():
+                candidate = f"Field{candidate}"
+        reserved = used.setdefault(scope, set())
+        if candidate in properties.get(scope, set()):
+            candidate += "Model"
         base = candidate
         suffix = 2
-        while candidate in used:
+        contextual = bool(model.get("primary_key_fields"))
+        while candidate in reserved or (contextual and f"{candidate}Item" in reserved):
             candidate = f"{base}{suffix}"
             suffix += 1
-        used.add(candidate)
-        names[model_id] = candidate
+        reserved.add(candidate)
+        if contextual:
+            reserved.add(f"{candidate}Item")
+        name = f"{scope}.{candidate}" if scope else candidate
+        names[model_id] = name
+        properties[name] = set(_field_names(by_parent.get(model_id, [])).values())
+        used.setdefault(name, set()).update(properties[name])
+        return name
+
+    for model in models:
+        assign(model)
     return names
 
 
@@ -594,8 +636,7 @@ def _python_visible_models(models: list[dict[str, Any]], by_parent: dict[int, li
 
 def _keyed_item_name(model: dict[str, Any], names: dict[int, str]) -> str:
     """Name the thin item wrapper carrying one list's primary-key guarantees."""
-    suffix = "IndexedItem" if model["indexed"] else "KeyedItem"
-    return f"{names[int(model['id'])]}{suffix}"
+    return f"{names[int(model['id'])]}Item"
 
 
 def _render_keyed_item_stubs(
@@ -603,10 +644,10 @@ def _render_keyed_item_stubs(
     by_parent: dict[int, list[dict[str, Any]]],
     names: dict[int, str],
     root_model: int,
-) -> str:
+) -> dict[str, str]:
     """Declare contextual key guarantees without changing the reusable item type's contract."""
     by_id = {int(model["id"]): model for model in models}
-    output: list[str] = []
+    output: dict[str, str] = {}
     for model in _python_visible_models(models, by_parent, root_model):
         primary_keys = _primary_key_fields(model, by_id, by_parent)
         if not primary_keys:
@@ -615,13 +656,50 @@ def _render_keyed_item_stubs(
         if item["relaxed"]:
             msg = "Python primary-key list items cannot expose an opaque relaxed item body"
             raise ValueError(msg)
-        output.append(f"class {_keyed_item_name(model, names)}({_python_target_type(item, names)}):\n")
+        qualified_name = _keyed_item_name(model, names)
+        local_name = qualified_name.rsplit(".", 1)[-1]
+        body = [f"class {local_name}({_python_target_type(item, names)}):\n"]
         for key in primary_keys:
             name = _field_names(by_parent[int(_target(item)[1])])[int(key["id"])]
-            output.append(f"    @property\n    def {name}(self) -> {_python_target_type(key, names)}:")
-            output.append(" ...\n")
-        output.append("\n")
-    return "".join(output)
+            body.append(f"    @property\n    def {name}(self) -> {_python_target_type(key, names)}: ...\n")
+        output[qualified_name] = "".join(body).rstrip()
+    return output
+
+
+def _nest_pyi_models(definitions: dict[str, str]) -> str:
+    """
+    Nest canonical declarations, creating namespace-only ancestors for partial references.
+
+    An externally referenced subtree may be exposed without its enclosing data models.
+    Such ancestors contain class names only; they do not promise properties or data access.
+    Qualified annotations preserve reuse across roots and permit forward references in stubs.
+    """
+    children: dict[str, list[str]] = {}
+    for qualified_name in definitions:
+        parts = qualified_name.split(".")
+        for index in range(len(parts)):
+            parent = ".".join(parts[:index])
+            name = ".".join(parts[: index + 1])
+            siblings = children.setdefault(parent, [])
+            if name not in siblings:
+                siblings.append(name)
+
+    def render(name: str, depth: int) -> str:
+        declaration = definitions.get(name, f"class {name.rsplit('.', 1)[-1]}:")
+        header, *body = declaration.splitlines()
+        if header.endswith(": ..."):
+            header = header.removesuffix(" ...")
+        nested = children.get(name, [])
+        if nested:
+            body = [line for line in body if line.strip() != "..."]
+        if not body and not nested:
+            return f"{'    ' * depth}{header} ..."
+        lines = [f"{'    ' * depth}{header}", *(f"{'    ' * depth}{line}" for line in body)]
+        if nested:
+            lines.extend(["", "\n\n".join(render(child, depth + 1) for child in nested)])
+        return "\n".join(lines)
+
+    return "\n\n".join(render(name, 0) for name in children.get("", []))
 
 
 def _render_pyi_bases() -> str:
@@ -691,10 +769,11 @@ def _render_pyi(
         "from pyavd._utils.undefined import UndefinedType\n",
         "from pyavd._rust import OpaqueData\n\n",
     ]
-    definitions: list[str] = [_render_pyi_bases()]
+    definitions: dict[str, str] = {}
     for model in _python_visible_models(models, by_parent, root_model):
         model_id = int(model["id"])
-        name = names[model_id]
+        qualified_name = names[model_id]
+        name = qualified_name.rsplit(".", 1)[-1]
         model_fields = by_parent.get(model_id, [])
         if model["kind"] == "Dict":
             body = [f"class {name}(_Model):\n"]
@@ -704,7 +783,7 @@ def _render_pyi(
             for field in static_fields:
                 name = _field_names(model_fields)[int(field["id"])]
                 body.append(f"    @property\n    def {name}(self) -> {_python_field_type(field, names)}: ...\n")
-            definitions.append("".join(body).rstrip())
+            definitions[qualified_name] = "".join(body).rstrip()
             continue
         item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
         base_item_type = _python_target_type(item, names) if item is not None else "Any"
@@ -713,16 +792,16 @@ def _render_pyi(
             base_item_type = _keyed_item_name(model, names)
         item_type = base_item_type if primary_key_fields or (item is not None and item["required"]) else f"{base_item_type} | None"
         if not model["indexed"]:
-            definitions.append(f"class {name}(_List[{item_type}]): ...")
+            definitions[qualified_name] = f"class {name}(_List[{item_type}]): ..."
             continue
         if len(primary_key_fields) != 1:
             msg = f"composite primary keys are not supported yet for model {model_id}"
             raise ValueError(msg)
         primary_key = primary_key_fields[0]
         primary_key_type = _python_target_type(primary_key, names)
-        definitions.append(f"class {name}(_IndexedList[{primary_key_type}, {item_type}]): ...")
-    definitions.append(_render_keyed_item_stubs(models, by_parent, names, root_model).rstrip())
-    output = ["".join(header), "\n\n".join(definitions)]
+        definitions[qualified_name] = f"class {name}(_IndexedList[{primary_key_type}, {item_type}]): ..."
+    definitions.update(_render_keyed_item_stubs(models, by_parent, names, root_model))
+    output = ["".join(header), _render_pyi_bases(), "\n\n", _nest_pyi_models(definitions)]
     root_name = names[root_model]
     output.extend(
         [

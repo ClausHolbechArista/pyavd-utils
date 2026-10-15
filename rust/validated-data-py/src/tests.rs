@@ -79,6 +79,121 @@ struct OtherProtocolDict<'a, Mode> {
     enabled: Field<bool>,
 }
 
+#[data_view(python(name = "AVDDesign"))]
+struct NestedRoot<'a, Mode> {
+    devices: Field<NestedDevices<'a, Mode>>,
+    standalone: Field<NestedItem<'a, Mode>>,
+    shared: Field<NestedSettings<'a, Mode>>,
+}
+
+#[data_view(
+    indexed_list,
+    primary_key(name),
+    python(name = "AVDDesign.Devices", item_name = "AVDDesign.DevicesItem")
+)]
+struct NestedDevices<'a, Mode>(Field<NestedItem<'a, Mode>>);
+
+#[data_view(python(name = "AVDDesign.DevicesItemBase"))]
+struct NestedItem<'a, Mode> {
+    name: Field<&'a str>,
+    settings: Field<NestedSettings<'a, Mode>>,
+}
+
+#[data_view(python(name = "EOSConfig.Shared.Settings"))]
+struct NestedSettings<'a, Mode> {
+    enabled: Field<bool>,
+}
+
+#[test]
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "Embedded assertions check the observable nested Python hierarchy."
+)]
+fn nested_classes_preserve_reuse_contextual_items_and_owner_lifetime() -> PyResult<()> {
+    let registry = ModelRegistry {
+        root_model: NestedRoot::<'static, validated_data::Validated>::DESCRIPTOR,
+        hash: [11; 32],
+    };
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("nested.rkyv");
+    let input = serde_json::json!({
+        "devices": [{"name": "leaf", "settings": {"enabled": true}}],
+        "standalone": {},
+        "shared": {"enabled": false},
+    });
+    validated_data::publish(&input, [3; 32], &file, registry)
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    let store = Arc::new(
+        DataStore::from_file(&file, [3; 32], registry)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?,
+    );
+    store
+        .root_as::<NestedRoot<'_>>()
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    Python::initialize();
+    Python::attach(|py| {
+        let module = PyModule::new(py, "nested_fixture")?;
+        let undefined = py.import("builtins")?.getattr("object")?.call0()?;
+        install_models::<NestedRoot<'static>>(&module, &py.get_type::<PyDict>(), &undefined)?;
+        let locals = PyDict::new(py);
+        locals.set_item("models", &module)?;
+        locals.set_item("undefined", undefined)?;
+        locals.set_item(
+            "root",
+            wrap_named(&module, "AVDDesign", store.root_handle())?,
+        )?;
+        // Qualified wrapping must also work independently of a containing Python model.
+        locals.set_item(
+            "second",
+            wrap_named(&module, "AVDDesign", store.root_handle())?,
+        )?;
+        drop(store);
+        py.run(
+            c"\
+AVDDesign = models.AVDDesign
+EOSConfig = models.EOSConfig
+assert set(name for name in vars(models) if not name.startswith('_')) == {'AVDDesign', 'EOSConfig'}
+assert AVDDesign.Devices.__name__ == 'Devices'
+assert AVDDesign.Devices.__qualname__ == 'AVDDesign.Devices'
+assert AVDDesign.DevicesItem.__base__ is AVDDesign.DevicesItemBase
+assert AVDDesign.DevicesItem.name is AVDDesign.DevicesItemBase.name
+assert EOSConfig.Shared.Settings.__qualname__ == 'EOSConfig.Shared.Settings'
+item = root.devices['leaf']
+assert type(item) is AVDDesign.DevicesItem
+assert item.name == 'leaf'
+assert type(root.standalone) is AVDDesign.DevicesItemBase
+assert root.standalone.name is undefined
+assert type(root.shared) is EOSConfig.Shared.Settings
+assert type(item.settings) is EOSConfig.Shared.Settings
+assert root.shared.enabled is False
+assert second.devices['leaf'].name == item.name
+settings = item.settings
+del root, second, item
+assert settings.enabled is True
+",
+            None,
+            Some(&locals),
+        )?;
+        drop(locals);
+        let root_reference = py
+            .import("weakref")?
+            .getattr("ref")?
+            .call1((module.getattr("AVDDesign")?,))?;
+        let leaf_reference =
+            py.import("weakref")?
+                .getattr("ref")?
+                .call1((crate::catalog::resolve_python_type(
+                    &module,
+                    "EOSConfig.Shared.Settings",
+                )?,))?;
+        drop(module);
+        py.import("gc")?.getattr("collect")?.call0()?;
+        assert!(root_reference.call0()?.is_none());
+        assert!(leaf_reference.call0()?.is_none());
+        Ok(())
+    })
+}
+
 fn protocol_store(value: &serde_json::Value) -> PyResult<Arc<DataStore>> {
     let registry = ModelRegistry {
         root_model: ProtocolRoot::<'static, validated_data::Validated>::DESCRIPTOR,

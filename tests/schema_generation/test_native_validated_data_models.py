@@ -27,8 +27,6 @@ def test_native_catalog_and_stub_generation_is_deterministic(tmp_path: Path) -> 
     assert rust.read_text() == root_before
     assert modules_before == modules_after
     assert 'python(name = "SchemaGenerationFixture")' in declarations
-    assert (
-        'python(name = "SchemaGenerationFixtureInterfaceProfilesList", item_name = "SchemaGenerationFixtureInterfaceProfilesListIndexedItem")' in declarations
-    )
+    assert 'python(name = "SchemaGenerationFixture.InterfaceProfiles", item_name = "SchemaGenerationFixture.InterfaceProfilesItem")' in declarations
     assert not (tmp_path / "models/native.rs").exists()
     assert "pub mod native;" not in root_before

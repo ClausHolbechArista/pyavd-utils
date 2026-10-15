@@ -140,10 +140,11 @@ impl ResolvedTarget {
         let class = match target {
             Target::Scalar => None,
             Target::Model(model) => Some(
-                module
-                    .getattr(contextual_name.unwrap_or(model().name))?
-                    .cast_into::<PyType>()?
-                    .unbind(),
+                crate::catalog::resolve_python_type(
+                    module,
+                    contextual_name.unwrap_or(model().name),
+                )?
+                .unbind(),
             ),
             Target::Opaque => Some(opaque.clone().unbind()),
         };
@@ -247,11 +248,11 @@ fn wrap_type(class: &Bound<'_, PyType>, value: ValueHandle) -> PyResult<Py<PyAny
     Ok(class.call1((handle,))?.unbind())
 }
 
-/// Wrap a structurally checked root or child handle in a named native model class.
+/// Wrap a structurally checked root or child handle in a qualified native model class.
 pub fn wrap_named(
     module: &Bound<'_, PyModule>,
     name: &str,
     value: ValueHandle,
 ) -> PyResult<Py<PyAny>> {
-    wrap_type(&module.getattr(name)?.cast_into::<PyType>()?, value)
+    wrap_type(&crate::catalog::resolve_python_type(module, name)?, value)
 }
