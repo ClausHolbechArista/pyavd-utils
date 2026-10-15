@@ -150,6 +150,27 @@ mod tests {
     }
 
     #[test]
+    fn yaml_description_continuation_survives_file_load_and_compilation() {
+        use crate::SchemaView;
+        use crate::Store;
+
+        let path = get_tmp_file("test_plain_description_continuation.yml");
+        std::fs::write(
+            &path,
+            "probe:\n  type: dict\n  keys:\n    stateless:\n      type: bool\n      description: Take action, regardless of state. Should be set to\n        'true' for MSS-G.\n      default: true\n",
+        ).unwrap();
+        let source = StoreSource::from_yaml_file(&path).unwrap();
+        let store = Store::compile(&source).unwrap();
+        let SchemaView::Dict(root) = store.get("probe").unwrap() else {
+            panic!("expected root dictionary");
+        };
+        assert_eq!(
+            root.key("stateless").unwrap().description(),
+            Some("Take action, regardless of state. Should be set to 'true' for MSS-G."),
+        );
+    }
+
+    #[test]
     fn unsigned_integer_defaults_survive_recursive_yaml_load_and_compilation() {
         use crate::SchemaValueView;
         use crate::SchemaView;
