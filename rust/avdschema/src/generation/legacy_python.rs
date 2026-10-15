@@ -29,10 +29,12 @@ use crate::StoreSource;
 use crate::compiled::CompiledStore;
 use crate::compiled::CompiledValue;
 use crate::compiled::SchemaId;
+use crate::generation::traversal::HiddenKeysPolicy;
 use crate::generation::traversal::SchemaOccurrence;
 use crate::generation::traversal::SchemaRelation;
 use crate::generation::traversal::SchemaTraverser;
 use crate::generation::traversal::SchemaVisitor;
+use crate::generation::traversal::TraversalConfig;
 use crate::generation::traversal::TraversalControl;
 
 const HEADER: &str = "# Copyright (c) 2026 Arista Networks, Inc.\n\
@@ -107,7 +109,13 @@ pub fn generate_python_models_projection(
 ) -> Result<String, GenerationError> {
     let traverser = SchemaTraverser::compile(store, schema_name)?;
     let mut projection = PythonProjection::new(schema_name, generated_class_name, root_keys);
-    traverser.traverse(&mut projection)?;
+    traverser.traverse(
+        &mut projection,
+        TraversalConfig {
+            hidden_keys: HiddenKeysPolicy::Expand,
+            include_removed: false,
+        },
+    )?;
     let root_node = projection.finish();
     let mut root = build_node(
         traverser.compiled(),
@@ -261,11 +269,6 @@ impl SchemaVisitor for PythonProjection<'_> {
             && !self.root_keys.is_empty()
             && !self.root_keys.iter().any(|selected| selected == name)
         {
-            self.stack.push(None);
-            return Ok(TraversalControl::SkipChildren);
-        }
-
-        if occurrence.relation() != SchemaRelation::Root && is_removed_common(occurrence.common()) {
             self.stack.push(None);
             return Ok(TraversalControl::SkipChildren);
         }
@@ -1267,13 +1270,6 @@ fn common(store: &CompiledStore, schema_id: SchemaId) -> &crate::compiled::Commo
         SchemaId::List(index) => &store.lists[index as usize].common,
         SchemaId::Dict(index) => &store.dicts[index as usize].common,
     }
-}
-
-fn is_removed_common(common: &crate::compiled::Common) -> bool {
-    common
-        .deprecation
-        .as_ref()
-        .is_some_and(|deprecation| deprecation.removed)
 }
 
 fn runtime_type(schema_id: SchemaId) -> &'static str {
