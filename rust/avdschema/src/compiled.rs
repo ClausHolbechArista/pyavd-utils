@@ -33,7 +33,7 @@ use crate::any::SourceLayer;
 use crate::any::SourceSchema;
 use crate::any::SourceType;
 use crate::base::Deprecation;
-use crate::resolve::resolve_ref::resolve_ref;
+use crate::source_layers::expand_layers;
 use crate::str::Format;
 
 /// Identifies files produced by the AVD schema compiler before rkyv validation is attempted.
@@ -546,7 +546,7 @@ impl<'a> Compiler<'a> {
         declared: &[SourceLayer<'a>],
         schema_path: &[String],
     ) -> Result<SchemaId, CompileError> {
-        let layers = self.expand_layers(declared, schema_path)?;
+        let layers = expand_layers(self.source, declared, schema_path)?;
         let memo_key = layers
             .iter()
             .map(|schema| schema.identity())
@@ -585,54 +585,6 @@ impl<'a> Compiler<'a> {
         let id = self.intern(node_result)?;
         self.memoized_layers.insert(memo_key, id);
         Ok(id)
-    }
-
-    fn expand_layers(
-        &self,
-        declared: &[SourceLayer<'a>],
-        schema_path: &[String],
-    ) -> Result<Vec<SourceLayer<'a>>, CompileError> {
-        let Some(first_declared) = declared.first().copied() else {
-            return Err(SchemaDiagnostic::TypeMismatch {
-                expected: "schema",
-                found: "no declared layers",
-            }
-            .into());
-        };
-        let mut result = Vec::new();
-        for declared_layer in declared {
-            let mut layer = *declared_layer;
-            let mut chain = Vec::new();
-            loop {
-                if first_declared.schema_type() != layer.schema_type() {
-                    return Err(SchemaDiagnostic::TypeMismatch {
-                        expected: first_declared.schema_type().as_str(),
-                        found: layer.schema_type().as_str(),
-                    }
-                    .into());
-                }
-                chain.push(layer.identity());
-                result.push(layer);
-                let Some(reference) = layer.schema_ref() else {
-                    break;
-                };
-                layer = resolve_ref(reference, self.source).map_err(|error| {
-                    SchemaDiagnostic::Reference {
-                        schema_path: schema_path.to_vec(),
-                        reference: reference.to_owned(),
-                        error,
-                    }
-                })?;
-                if chain.contains(&layer.identity()) {
-                    return Err(SchemaDiagnostic::ReferenceCycle {
-                        schema_path: schema_path.to_vec(),
-                        reference: reference.to_owned(),
-                    }
-                    .into());
-                }
-            }
-        }
-        Ok(result)
     }
 
     fn compile_bool(
@@ -1041,7 +993,8 @@ fn default_dynamic_keys(
             continue;
         }
         let child_schema_path = schema_path_with(&schema_path_with(schema_path, "keys"), root_key);
-        let expanded_child_layers = compiler.expand_layers(&child_layers, &child_schema_path)?;
+        let expanded_child_layers =
+            expand_layers(compiler.source, &child_layers, &child_schema_path)?;
         let Some(default) = expanded_child_layers
             .iter()
             .find_map(|layer| schema_default(*layer))

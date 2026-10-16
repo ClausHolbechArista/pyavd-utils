@@ -32,10 +32,12 @@ use crate::compiled::CompiledStore;
 use crate::compiled::CompiledStringFormat;
 use crate::compiled::CompiledValue;
 use crate::compiled::SchemaId;
+use crate::generation::traversal::HiddenKeysPolicy;
 use crate::generation::traversal::SchemaOccurrence;
 use crate::generation::traversal::SchemaRelation;
 use crate::generation::traversal::SchemaTraverser;
 use crate::generation::traversal::SchemaVisitor;
+use crate::generation::traversal::TraversalConfig;
 use crate::generation::traversal::TraversalControl;
 
 const LICENSE_HEADER: &str = "Copyright (c) 2026 Arista Networks, Inc.\n\
@@ -73,7 +75,13 @@ pub fn generate_markdown_documentation(
 ) -> Result<Vec<(String, String)>, DocumentationGenerationError> {
     let traverser = SchemaTraverser::compile(store, schema_name)?;
     let mut projection = DocumentationProjection::new(traverser.compiled(), schema_name);
-    traverser.traverse(&mut projection)?;
+    traverser.traverse(
+        &mut projection,
+        TraversalConfig {
+            hidden_keys: HiddenKeysPolicy::PruneExceptDictionaryItems,
+            include_removed: true,
+        },
+    )?;
     let root = projection.finish();
     Ok(root
         .descendant_tables(traverser.compiled())
@@ -390,22 +398,7 @@ impl SchemaVisitor for DocumentationProjection<'_> {
             return Ok(TraversalControl::SkipChildren);
         }
 
-        let hide_keys = occurrence
-            .common()
-            .documentation_options
-            .as_ref()
-            .is_some_and(|options| options.hide_keys);
-        // The list renderer visits dictionary item keys directly, bypassing the item's
-        // hide_keys option. Retain the item for table discovery, where hide_keys does apply.
-        let transparent = self
-            .stack
-            .last()
-            .is_some_and(|frame| matches!(frame.kind, DocFrameKind::TransparentListItem { .. }));
-        Ok(if hide_keys && !transparent {
-            TraversalControl::SkipChildren
-        } else {
-            TraversalControl::Descend
-        })
+        Ok(TraversalControl::Descend)
     }
 
     fn leave(&mut self, occurrence: &SchemaOccurrence<'_>) -> Result<(), Self::Error> {
