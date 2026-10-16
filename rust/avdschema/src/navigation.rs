@@ -167,11 +167,7 @@ where
         {
             continue;
         }
-        let values = dynamic_values_at_path(path, input).or_else(|| {
-            schema
-                .default_dynamic_keys(path)
-                .map(|values| values.map(ToOwned::to_owned).collect())
-        });
+        let values = resolve_dynamic_key_names(schema, path, input);
         for key in values.into_iter().flatten() {
             resolved.insert(key, dynamic_schema);
         }
@@ -191,6 +187,25 @@ where
         }
     }
     resolved
+}
+
+/// Resolve one dynamic selector using the same input/default precedence as schema validation.
+///
+/// A supplied selector, including an empty list or null, suppresses its archived defaults.
+/// The returned names are selectors only; callers decide whether a concrete payload is present.
+pub fn resolve_dynamic_key_names<'input, M>(
+    schema: DictView<'_>,
+    path: &str,
+    input: M,
+) -> Option<Vec<String>>
+where
+    M: SchemaDataMapping<'input>,
+{
+    dynamic_values_at_path(path, input).or_else(|| {
+        schema
+            .default_dynamic_keys(path)
+            .map(|values| values.map(ToOwned::to_owned).collect())
+    })
 }
 
 fn dynamic_values_at_path<'input, M>(key_path: &str, input: M) -> Option<Vec<String>>

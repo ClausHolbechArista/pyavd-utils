@@ -129,6 +129,7 @@ pub use self::inherit::Inherit;
 pub use self::metaschema::generate_metaschema_json;
 pub use self::navigation::SchemaInfo;
 pub use self::navigation::SchemaPathError;
+pub use self::navigation::resolve_dynamic_key_names;
 pub use self::navigation::resolve_dynamic_keys;
 pub use self::resolve::errors::SchemaResolverError;
 pub use self::resolve::walker::SchemaWalkError;

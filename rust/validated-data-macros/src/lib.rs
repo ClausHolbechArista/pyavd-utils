@@ -51,8 +51,10 @@ mod tests;
 /// class inside its public hierarchy, such as `AVDDesign.DevicesItemBase`. Keyed lists additionally
 /// declare `item_name = "..."` for their contextual item identity. The declaration emits a
 /// `validated_data_py::PythonModel` implementation whose fields reference the original Rust
-/// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields are
-/// not exposed as named Python properties, and relaxed relationships remain opaque payloads.
+/// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields use
+/// `python_name = "..."` for a typed group under `_dynamic_keys`, not a static property.
+/// `schema = Str(0)` on a field and `python(..., schema = Dict(0))` on a model identify nodes
+/// in the matching compiled schema for default lookup. Relaxed relationships remain opaque.
 #[proc_macro_attribute]
 pub fn data_view(arguments: TokenStream, input: TokenStream) -> TokenStream {
     let item = syn::parse_macro_input!(input as ItemStruct);
@@ -74,6 +76,24 @@ struct Options {
 struct PythonOptions {
     name: Option<LitStr>,
     item_name: Option<LitStr>,
+    schema: Option<Tokens>,
+}
+
+/// Parse a compiled schema identity without making Rust-only views depend on avdschema.
+fn schema_identity(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Tokens> {
+    let input = meta.value()?;
+    let kind: syn::Ident = input.parse()?;
+    if !["Bool", "Int", "Str", "List", "Dict"]
+        .iter()
+        .any(|name| kind == name)
+    {
+        return Err(meta.error("unknown schema table"));
+    }
+    let content;
+    syn::parenthesized!(content in input);
+    let index: syn::LitInt = content.parse()?;
+    let _: u32 = index.base10_parse()?;
+    Ok(quote!(Some(::validated_data_py::SchemaId::#kind(#index))))
 }
 
 fn options(arguments: Tokens) -> syn::Result<Options> {
@@ -98,6 +118,8 @@ fn options(arguments: Tokens) -> syn::Result<Options> {
                     python.name = Some(nested.value()?.parse()?);
                 } else if nested.path.is_ident("item_name") {
                     python.item_name = Some(nested.value()?.parse()?);
+                } else if nested.path.is_ident("schema") {
+                    python.schema = Some(schema_identity(&nested)?);
                 } else {
                     return Err(nested.error("unknown Python binding option"));
                 }
@@ -371,6 +393,10 @@ fn expand_list(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
     Ok(expansion)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Each field's Rust accessor and Python binding metadata are emitted together from one declaration."
+)]
 fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
     let mut expansion = Expansion::default();
     let name = &item.ident;
@@ -393,6 +419,8 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
         let mut dynamic = false;
         let mut relaxed = false;
         let mut retained_attributes = Vec::new();
+        let mut schema = quote!(None);
+        let mut python_name = None;
         for attribute in &field.attrs {
             if !attribute.path().is_ident("data_view") {
                 retained_attributes.push(attribute);
@@ -406,6 +434,10 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
                     key = meta.value()?.parse()?;
                 } else if meta.path.is_ident("relaxed") {
                     relaxed = true;
+                } else if meta.path.is_ident("schema") {
+                    schema = schema_identity(&meta)?;
+                } else if meta.path.is_ident("python_name") {
+                    python_name = Some(meta.value()?.parse::<LitStr>()?);
                 } else {
                     return Err(meta.error("unknown field option"));
                 }
@@ -432,17 +464,19 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
                 id: #slot, relation: #relation, target_model: #target_model,
                 scalar_type: #scalar_type, required: #required, relaxed: #relaxed,
             }));
-        if dynamic {
-            continue;
-        }
         if options.python.is_some() {
-            let property_name = LitStr::new(&identifier.to_string(), identifier.span());
+            let property_name = python_name
+                .unwrap_or_else(|| LitStr::new(&identifier.to_string(), identifier.span()));
             let conversion = python_target(target, relaxed);
             expansion.python_fields.push(quote!(::validated_data_py::FieldBinding {
                 name: #property_name,
                 descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR.fields[#field_index],
                 target: #conversion,
+                schema_id: #schema,
             }));
+        }
+        if dynamic {
+            continue;
         }
         let access = if target_scalar.is_some() {
             quote!(self.0.scalar::<#target>(#slot))
@@ -500,6 +534,7 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
     let indexed = options.indexed;
     let python = if let Some(python) = options.python {
         let python_name = python.name;
+        let schema = python.schema.unwrap_or_else(|| quote!(None));
         let item_name = python.item_name.map_or_else(
             || quote!(None),
             |python_item_name| quote!(Some(#python_item_name)),
@@ -513,6 +548,7 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
             impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data_py::PythonModel for #name<'a, __DataViewMode> {
                 const BINDING: ::validated_data_py::ModelBinding = ::validated_data_py::ModelBinding {
                     name: #python_name,
+                    schema_id: #schema,
                     descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR,
                     fields: &[#(#fields),*],
                     item: #item_expression,

@@ -8,9 +8,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+avdschema = { path = "../avdschema", default-features = false }
 pyo3.workspace = true
+serde_json.workspace = true
 validated-data = { path = "../validated-data" }
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3.23.0"

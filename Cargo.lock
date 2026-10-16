@@ -2436,6 +2436,7 @@ dependencies = [
 name = "validated-data-py"
 version = "0.0.12"
 dependencies = [
+ "avdschema",
  "pyo3",
  "serde_json",
  "tempfile",

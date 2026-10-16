@@ -4,6 +4,7 @@
 
 import ast
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -101,7 +102,7 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
     assert ast.unparse(key_getitem.returns) == "_T_co"
     assert [ast.unparse(base) for base in classes["Fixture.Empty"].bases] == ["_Model"]
     model_methods = {node.name for node in classes["_Model"].body if isinstance(node, ast.FunctionDef)}
-    assert {"__bool__", "__eq__"} == model_methods
+    assert {"__bool__", "__eq__", "_is_defined", "_is_default"} == model_methods
 
 
 def test_generate_validated_data_models(tmp_path: Path) -> None:
@@ -132,13 +133,16 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     assert "pub struct Item<'a, Mode>" in rust_source
     assert "pub interface_profiles: ::validated_data::Field<" in rust_source
     assert "primary_key(name)" in rust_source
-    assert 'python(name = "SchemaGenerationFixture")' in rust_source
-    assert 'python(name = "SchemaGenerationFixture.InterfaceProfiles", item_name = "SchemaGenerationFixture.InterfaceProfilesItem")' in rust_source
+    assert re.search(r'python\(name = "SchemaGenerationFixture", schema = Dict\(\d+\)\)', rust_source)
+    assert re.search(
+        r'python\(name = "SchemaGenerationFixture.InterfaceProfiles", schema = List\(\d+\), item_name = "SchemaGenerationFixture.InterfaceProfilesItem"\)',
+        rust_source,
+    )
     assert "class InterfaceProfiles(_IndexedList[str, SchemaGenerationFixture.InterfaceProfilesItem]):" in pyi_source
     assert "class SchemaGenerationFixture(_Model):" in pyi_source
     assert "class StrValue:" not in pyi_source
     assert "_List[str | None]" in pyi_source
-    assert "-> str | UndefinedType | None" in pyi_source
+    assert "-> str | None" in pyi_source
     assert not (tmp_path / "models.py").exists()
     ast.parse(pyi_source)
 
@@ -230,13 +234,13 @@ def test_generate_validated_data_models_reuses_pure_cross_schema_references(tmp_
     assert "pub mod external;" in rust_source
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
     assert "super::external::Shared<'a, Mode>" in rust_source
-    assert 'python(name = "External.Shared")' in rust_source
-    assert 'python(name = "Root.Value")' not in rust_source
-    assert rust_source.count('python(name = "External.Shared")') == 1
+    assert re.search(r'python\(name = "External.Shared", schema = Dict\(\d+\)\)', rust_source)
+    assert 'python(name = "Root.Value",' not in rust_source
+    assert rust_source.count('python(name = "External.Shared",') == 1
     classes = _stub_classes(pyi.read_text(encoding="UTF-8"))
     assert classes["External"].bases == []  # Only a namespace for the referenced subtree.
     assert "External.Shared" in classes
-    assert "def value(self) -> External.Shared | UndefinedType | None:" in pyi.read_text(encoding="UTF-8")
+    assert "def value(self) -> External.Shared | None:" in pyi.read_text(encoding="UTF-8")
     assert "def open_root(archive: Path, schema_archive: Path) -> Root:" in pyi.read_text(encoding="UTF-8")
 
 
@@ -295,18 +299,18 @@ def test_nested_names_preserve_canonical_reuse_and_item_guarantees(tmp_path: Pat
     } <= classes.keys()
     assert classes["EOSConfig"].bases == []
     assert classes["EOSConfig.Section"].bases == []
-    assert "def first(self) -> EOSConfig.Section.Settings | UndefinedType | None:" in stub
-    assert "def second(self) -> EOSConfig.Section.Settings | UndefinedType | None:" in stub
+    assert "def first(self) -> EOSConfig.Section.Settings | None:" in stub
+    assert "def second(self) -> EOSConfig.Section.Settings | None:" in stub
     assert "Fixture.First" not in classes
     assert "Fixture.Second" not in classes
     assert "Fixture.DevicesItemBase.Items.Keys" in classes
     assert [ast.unparse(base) for base in classes["Fixture.DevicesItem"].bases] == ["Fixture.DevicesItemBase"]
     base_name = next(node for node in classes["Fixture.DevicesItemBase"].body if isinstance(node, ast.FunctionDef) and node.name == "name")
     guaranteed_name = next(node for node in classes["Fixture.DevicesItem"].body if isinstance(node, ast.FunctionDef) and node.name == "name")
-    assert ast.unparse(base_name.returns) == "str | UndefinedType | None"
+    assert ast.unparse(base_name.returns) == "str | None"
     assert ast.unparse(guaranteed_name.returns) == "str"
     rust_source = _combined_rust_source(rust)
-    assert rust_source.count('python(name = "EOSConfig.Section.Settings")') == 1
+    assert rust_source.count('python(name = "EOSConfig.Section.Settings",') == 1
     assert "pub mod eos_config;" in rust_source
     projected_rust, projected_pyi = tmp_path / "projected.rs", tmp_path / "projected.pyi"
     generate_validated_data_models(
@@ -344,9 +348,9 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
 
     rust_source = _combined_rust_source(rust)
     pyi_source = pyi.read_text(encoding="UTF-8")
-    assert '#[data_view(rename = "match")]' in rust_source
+    assert re.search(r'#\[data_view\(schema = Str\(\d+\), rename = "match"\)\]', rust_source)
     assert "pub field_match: ::validated_data::Field<&'a str>" in rust_source
-    assert '#[data_view(rename = "override")]' in rust_source
+    assert re.search(r'#\[data_view\(schema = Str\(\d+\), rename = "override"\)\]', rust_source)
     assert "pub field_override: ::validated_data::Field<&'a str>" in rust_source
     assert "pub Vxlan1: ::validated_data::Field<" in rust_source
     assert "pub vxlan1: ::validated_data::Field<" in rust_source
@@ -396,10 +400,10 @@ def test_validation_modes_preserve_reuse_and_python_presence_contracts(tmp_path:
     assert "pub strict: ::validated_data::Field<super::shared::Shared<'a, Mode>>" in rust_source
     assert "pub patch: ::validated_data::Field<super::shared::Shared<'a, ::validated_data::RelaxedValidated>>" in rust_source
     assert "(::validated_data::RequiredValue<i64, Mode>);" in rust_source
-    assert "def strict(self) -> Shared | UndefinedType | None:" in pyi_source
-    assert "def patch(self) -> OpaqueData | UndefinedType | None:" in pyi_source
+    assert "def strict(self) -> Shared | None:" in pyi_source
+    assert "def patch(self) -> OpaqueData | None:" in pyi_source
     assert "def name(self) -> str:" in pyi_source
-    assert "def enabled(self) -> bool | UndefinedType | None:" in pyi_source
+    assert "def enabled(self) -> bool | None:" in pyi_source
     assert "class EntriesItem(Fixture.EntriesItemBase):" in pyi_source
     assert "class Numbers(_List[int]):" in pyi_source
     root_class = next(node for node in ast.parse(pyi_source).body if isinstance(node, ast.ClassDef) and node.name == "Fixture")
@@ -441,7 +445,7 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     pyi_source = pyi.read_text(encoding="UTF-8")
     assert "class Duplicates(_List[Fixture.DuplicatesItem]):" in pyi_source
     assert "class DuplicatesItem(Shared):" in pyi_source
-    assert "def name(self) -> str | UndefinedType | None:" in pyi_source
+    assert "def name(self) -> str | None:" in pyi_source
     classes = _stub_classes(pyi_source)
     wrapper = classes["Fixture.DuplicatesItem"]
     name_property = next(node for node in wrapper.body if isinstance(node, ast.FunctionDef) and node.name == "name")
@@ -454,8 +458,8 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     ]
     collection_methods = {node.name for node in classes["_Collection"].body if isinstance(node, ast.FunctionDef)}
     assert {"__iter__", "__len__", "__reversed__", "__eq__", "count", "index"} == collection_methods
-    assert 'python(name = "Fixture.Duplicates", item_name = "Fixture.DuplicatesItem")' in rust_source
-    assert 'python(name = "Shared")' in rust_source
+    assert re.search(r'python\(name = "Fixture.Duplicates", schema = List\(\d+\), item_name = "Fixture.DuplicatesItem"\)', rust_source)
+    assert re.search(r'python\(name = "Shared", schema = Dict\(\d+\)\)', rust_source)
     assert "indexed_list" not in rust_source
 
 
@@ -539,8 +543,65 @@ def test_generate_validated_data_models_keeps_dynamic_model_descriptors(tmp_path
     generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = _combined_rust_source(rust)
-    assert '#[data_view(dynamic = "selectors.names")]' in rust_source
+    assert re.search(r'#\[data_view\(schema = Dict\(\d+\), python_name = "selectors", dynamic = "selectors.names"\)\]', rust_source)
     assert "pub selectors_names: ::validated_data::Field<DynamicSlot0<'a, Mode>>" in rust_source
     assert "pub struct DynamicSlot0" in rust_source
-    assert 'python(name = "Fixture.SelectorsNames' not in rust_source
+    assert re.search(r'python\(name = "Fixture._DynamicKeys.Selectors", schema = Dict\(\d+\)\)', rust_source)
+    classes = _stub_classes(pyi.read_text(encoding="UTF-8"))
+    assert "Fixture._DynamicKeys.Selectors" in classes
+    group = next(node for node in classes["Fixture._DynamicKeys"].body if isinstance(node, ast.FunctionDef))
+    assert group.name == "selectors"
+    assert ast.unparse(group.returns) == "_DynamicCollection[Fixture._DynamicKeys.Selectors]"
+    get_overloads = [node for node in classes["_DynamicCollection"].body if isinstance(node, ast.FunctionDef) and node.name == "get"]
+    assert [ast.unparse(node.returns) for node in get_overloads] == ["_DynamicEntry[_T_co] | UndefinedType", "_DynamicEntry[_T_co] | _D"]
     assert not (rust.with_suffix("") / "native.rs").exists()
+
+
+def test_dynamic_groups_use_schema_names_and_preserve_reused_types(tmp_path: Path) -> None:
+    """Group under schema display names, escaping keywords without copying canonical models."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps(
+            {
+                "external": {"type": "dict", "display_name": "Class", "keys": {"enabled": {"type": "bool", "default": True}}},
+                "fixture": {
+                    "type": "dict",
+                    "dynamic_keys": {
+                        "node_type_keys.key": {"type": "dict", "display_name": "Node types", "keys": {"id": {"type": "int"}}},
+                        "other_keys.name": {"type": "dict", "$ref": "external#"},
+                    },
+                },
+            }
+        ),
+        encoding="UTF-8",
+    )
+    rust, pyi = tmp_path / "models.rs", tmp_path / "models.pyi"
+    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"external": ("External", "External")})
+    classes = _stub_classes(pyi.read_text(encoding="UTF-8"))
+    groups = {node.name: ast.unparse(node.returns) for node in classes["Fixture._DynamicKeys"].body if isinstance(node, ast.FunctionDef)}
+    assert groups == {"node_types": "_DynamicCollection[Fixture._DynamicKeys.NodeTypes]", "field_class": "_DynamicCollection[External]"}
+    declarations = _combined_rust_source(rust)
+    assert 'python_name = "node_types"' in declarations
+    assert 'python_name = "field_class"' in declarations
+    assert declarations.count("pub struct External<'a, Mode>") == 1
+
+
+def test_dynamic_group_name_collisions_are_rejected(tmp_path: Path) -> None:
+    """Do not silently shadow selector groups after applying Python naming rules."""
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps(
+            {
+                "fixture": {
+                    "type": "dict",
+                    "dynamic_keys": {
+                        "first.names": {"type": "dict", "display_name": "Same name"},
+                        "second.names": {"type": "dict", "display_name": "Same name"},
+                    },
+                }
+            }
+        ),
+        encoding="UTF-8",
+    )
+    with pytest.raises(ValueError, match=r"conflicting dynamic key group Fixture\.same_name"):
+        generate_validated_data_models(source, "fixture", tmp_path / "models.rs", tmp_path / "models.pyi", "Fixture", "Fixture")

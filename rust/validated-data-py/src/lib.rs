@@ -13,6 +13,13 @@
 //! Registration is interpreter-local. Descriptors cache child types and the undefined singleton;
 //! their Python references participate in cyclic garbage collection. Values are converted only
 //! when accessed. Child wrappers retain the mmap owner and do not copy collections.
+//! A schema-backed root also retains its schema archive: absent fields borrow their schema
+//! defaults, or expose empty collection views and `None` for scalars without defaults.
+//! Explicit null suppresses fallback. This affects Python access only; the host archive and
+//! raw Rust views retain supplied values for inheritance. `_is_defined(name)` tests for a supplied
+//! non-null field, while `_is_default(name)` identifies fallback rather than value equality.
+//! Dynamic payloads remain at their original keys and are exposed lazily through typed
+//! `_dynamic_keys` selector groups, using the same selector resolution as validation.
 //!
 //! Positional lists implement the read-only Python sequence protocol. Indexed lists instead
 //! index and test membership by primary key; they iterate values and support positional
@@ -29,11 +36,18 @@
 mod catalog;
 mod collections;
 mod descriptors;
+mod dynamic;
+mod values;
 
 extern crate self as validated_data_py;
 
+pub use avdschema::SchemaId;
 pub use catalog::{FieldBinding, ModelBinding, PythonModel, Target, install_models};
+pub use descriptors::wrap_with_schema;
 pub use descriptors::{PyValueHandle, wrap_named};
+pub use values::ViewHandle;
 
+#[cfg(test)]
+mod default_tests;
 #[cfg(test)]
 mod tests;

@@ -213,6 +213,10 @@ def _model_names(models: list[dict[str, Any]], fields: list[dict[str, Any]], roo
         else:
             parent = by_path[path[:-2]]
             scope, candidate = assign(parent), _pascal(str(path[-1]))
+            if path[-2] == "dynamic_keys":
+                scope += "._DynamicKeys"
+                dynamic_field = next(field for field in by_parent[int(parent["id"])] if _relation(field) == ("DynamicKey", path[-1]))
+                candidate = _pascal(_dynamic_group(dynamic_field))
             if not candidate or candidate[0].isdigit():
                 candidate = f"Field{candidate}"
         reserved = used.setdefault(scope, set())
@@ -240,6 +244,19 @@ def _model_names(models: list[dict[str, Any]], fields: list[dict[str, Any]], roo
 
 def _pascal(value: str) -> str:
     return "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", value) if part)
+
+
+def _dynamic_group(field: dict[str, Any]) -> str:
+    """Use the schema display name, as in the legacy grouped API, or the selector root."""
+    display_name = field.get("display_name")
+    name = str(display_name).replace(" ", "_").lower() if display_name else str(_relation(field)[1]).split(".")[0]
+    return _identifier(name)
+
+
+def _schema_identity(identity: dict[str, int]) -> str:
+    """Render an identity into the exact compiled schema paired with generated models."""
+    kind, index = next(iter(identity.items()))
+    return f"{kind}({index})"
 
 
 def _identifier(value: str) -> str:
@@ -343,6 +360,8 @@ def _render_rust(
         "// Copyright (c) 2026 Arista Networks, Inc.\n",
         "// Generated from the AVD schema. Do not edit by hand.\n\n",
         f"const REGISTRY_HASH: [u8; 32] = [{', '.join(str(value) for value in registry['registry_hash'])}];\n",
+        "/// Exact combined schema archive required for generated schema-node identities.\n",
+        f"pub const SCHEMA_HASH: [u8; 32] = [{', '.join(str(value) for value in registry['schema_hash'])}];\n",
     ]
     module_outputs: dict[tuple[str, ...], list[str]] = {}
     visited: set[int] = set()
@@ -447,7 +466,7 @@ def _render_rust_model(
             list_kind = "indexed_list" if model["indexed"] else "list"
             options = [list_kind, f"primary_key({key_names})"]
     if model_id in python_names:
-        python_options = f"name = {json.dumps(python_names[model_id])}"
+        python_options = f"name = {json.dumps(python_names[model_id])}, schema = {_schema_identity(model['schema_id'])}"
         if primary_keys:
             python_options += f", item_name = {json.dumps(_keyed_item_name(model, python_names))}"
         options.append(f"python({python_options})")
@@ -463,13 +482,21 @@ def _render_rust_model(
             if key is None:
                 continue
             target_type = _rust_target(field, models, child_names, namespace_name, schema_name, scope, locations)
+            attributes = []
+            if model_id in python_names:
+                attributes.append(f"schema = {_schema_identity(field['schema_id'])}")
             attribute = ""
             if relation_kind == "DynamicKey":
                 attribute = f"dynamic = {json.dumps(key)}"
+                if model_id in python_names:
+                    attributes.append(f"python_name = {json.dumps(_dynamic_group(field))}")
             elif accessor_names[int(field["id"])] != key:
                 attribute = f"rename = {json.dumps(key)}"
             if field["relaxed"]:
                 attribute = f"{attribute}, relaxed" if attribute else "relaxed"
+            if attribute:
+                attributes.append(attribute)
+            attribute = ", ".join(attributes)
             if attribute:
                 output.append(f"{indent}    #[data_view({attribute})]\n")
             wrapper = f"::validated_data::RequiredValue<{target_type}, Mode>" if field["required"] else f"::validated_data::Field<{target_type}>"
@@ -617,7 +644,7 @@ def _python_target_type(field: dict[str, Any], names: dict[int, str]) -> str:
 def _python_field_type(field: dict[str, Any], names: dict[int, str]) -> str:
     parts = [_python_target_type(field, names)]
     if not bool(field["required"]):
-        parts.extend(["UndefinedType", "None"])
+        parts.append("None")
     return " | ".join(parts)
 
 
@@ -628,7 +655,7 @@ def _python_visible_models(models: list[dict[str, Any]], by_parent: dict[int, li
     while pending:
         for field in by_parent.get(pending.pop(), []):
             target_kind, target = _target(field)
-            if target_kind == "Model" and _relation(field)[0] != "DynamicKey" and not field["relaxed"] and int(target) not in visible:
+            if target_kind == "Model" and not field["relaxed"] and int(target) not in visible:
                 visible.add(int(target))
                 pending.append(int(target))
     return [model for model in models if int(model["id"]) in visible]
@@ -714,11 +741,27 @@ def _render_pyi_bases() -> str:
 _K = TypeVar("_K")
 
 class _Model:
-    """Immutable, unhashable model; equality compares all stored data of the same nominal type."""
+    """Immutable, unhashable model with borrowed defaults for absent fields.
+
+    Without a schema default, absent collections expose empty views and absent scalars return
+    None. Explicit null stays None and suppresses fallback. Access never inserts host data.
+    Equality compares backing contents of the same nominal type, not child accessor defaults.
+    """
     def __bool__(self) -> bool:
-        """Whether any key is supplied, including unknown/custom keys; no defaults are inserted."""
+        """Whether the backing collection has keys; child accessor defaults do not populate it."""
     def __eq__(self, other: object) -> bool:
         """Compare complete contents, ignoring dictionary key order but preserving list order and nulls."""
+    def _is_defined(self, name: str) -> bool:
+        """Whether host data supplies a non-null field; defaults are not supplied values.
+
+        False, zero, and empty collections count as defined. Unknown names raise AttributeError.
+        """
+    def _is_default(self, name: str) -> bool:
+        """Whether access uses a schema default or an implicit empty collection fallback.
+
+        Supplied values, including null or values equal to defaults, return False. An absent
+        scalar without a default also returns False. Unknown names raise AttributeError.
+        """
 
 class _Collection(Generic[_T_co]):
     """Immutable, unhashable collection; equality requires the same nominal type and stored item order."""
@@ -745,6 +788,34 @@ class _IndexedList(_Collection[_T_co], Generic[_K, _T_co]):
     def keys(self) -> Iterator[_K]: ...
     def values(self) -> Iterator[_T_co]: ...
     def items(self) -> Iterator[tuple[_K, _T_co]]: ...'''
+
+
+def _render_dynamic_pyi_bases() -> str:
+    """Describe selector groups without promising positional or indexed-list operations."""
+    return '''
+
+_D = TypeVar("_D")
+
+class _DynamicEntry(Generic[_T_co]):
+    """One concrete dynamic key and its typed, immutable value."""
+    @property
+    def key(self) -> str: ...
+    @property
+    def value(self) -> _T_co: ...
+
+class _DynamicCollection(Generic[_T_co]):
+    """Read-only key lookup with value iteration, grouped by one schema selector."""
+    def __len__(self) -> int: ...
+    def __contains__(self, key: str) -> bool: ...
+    def __getitem__(self, key: str) -> _DynamicEntry[_T_co]: ...
+    def __iter__(self) -> Iterator[_DynamicEntry[_T_co]]: ...
+    @overload
+    def get(self, key: str) -> _DynamicEntry[_T_co] | UndefinedType: ...
+    @overload
+    def get(self, key: str, default: _D) -> _DynamicEntry[_T_co] | _D: ...
+    def keys(self) -> Iterator[str]: ...
+    def values(self) -> Iterator[_DynamicEntry[_T_co]]: ...
+    def items(self) -> Iterator[tuple[str, _DynamicEntry[_T_co]]]: ...'''
 
 
 def _render_pyi(
@@ -783,6 +854,19 @@ def _render_pyi(
             for field in static_fields:
                 name = _field_names(model_fields)[int(field["id"])]
                 body.append(f"    @property\n    def {name}(self) -> {_python_field_type(field, names)}: ...\n")
+            dynamic_fields = [field for field in model_fields if _relation(field)[0] == "DynamicKey"]
+            if dynamic_fields:
+                body.append(f"    @property\n    def _dynamic_keys(self) -> {qualified_name}._DynamicKeys: ...\n")
+                namespace = ["class _DynamicKeys:\n"]
+                groups = set()
+                for field in dynamic_fields:
+                    group = _dynamic_group(field)
+                    if group in groups:
+                        msg = f"conflicting dynamic key group {qualified_name}.{group}"
+                        raise ValueError(msg)
+                    groups.add(group)
+                    namespace.append(f"    @property\n    def {group}(self) -> _DynamicCollection[{_python_target_type(field, names)}]: ...\n")
+                definitions[f"{qualified_name}._DynamicKeys"] = "".join(namespace).rstrip()
             definitions[qualified_name] = "".join(body).rstrip()
             continue
         item = next((field for field in model_fields if _relation(field)[0] == "Item"), None)
@@ -801,7 +885,8 @@ def _render_pyi(
         primary_key_type = _python_target_type(primary_key, names)
         definitions[qualified_name] = f"class {name}(_IndexedList[{primary_key_type}, {item_type}]): ..."
     definitions.update(_render_keyed_item_stubs(models, by_parent, names, root_model))
-    output = ["".join(header), _render_pyi_bases(), "\n\n", _nest_pyi_models(definitions)]
+    dynamic_bases = _render_dynamic_pyi_bases() if any(name.endswith("._DynamicKeys") for name in definitions) else ""
+    output = ["".join(header), _render_pyi_bases(), dynamic_bases, "\n\n", _nest_pyi_models(definitions)]
     root_name = names[root_model]
     output.extend(
         [

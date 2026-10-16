@@ -142,7 +142,7 @@ pub(crate) trait SchemaVisitor {
 #[derive(Debug)]
 pub(crate) struct SchemaTraverser<'a> {
     source: &'a StoreSource,
-    compiled: CompiledStore,
+    compiled: std::borrow::Cow<'a, CompiledStore>,
     schema_name: &'a str,
     root_source: &'a SourceRootDict,
     root_id: SchemaId,
@@ -155,6 +155,15 @@ impl<'a> SchemaTraverser<'a> {
         schema_name: &'a str,
     ) -> Result<Self, CompileError> {
         let compiled = CompiledStore::compile_schema(source, schema_name)?;
+        Self::with_compiled(source, schema_name, std::borrow::Cow::Owned(compiled))
+    }
+
+    /// Traverse against an existing store so emitted table IDs share its compilation scope.
+    pub(crate) fn with_compiled(
+        source: &'a StoreSource,
+        schema_name: &'a str,
+        compiled: std::borrow::Cow<'a, CompiledStore>,
+    ) -> Result<Self, CompileError> {
         let root_source = source
             .get(schema_name)
             .map_err(|error| SchemaDiagnostic::Reference {

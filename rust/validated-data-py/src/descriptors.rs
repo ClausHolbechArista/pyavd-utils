@@ -4,12 +4,13 @@
 
 //! Native property descriptors, scalar conversion, and archive-owner-preserving wrappers.
 
+use crate::values::{DictHandle, ViewHandle as ValueHandle};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyAttributeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyInt, PyModule, PyString, PyType};
 use pyo3::{PyTraverseError, PyVisit};
-use validated_data::{DictHandle, ValueHandle};
+use std::sync::Arc;
 
 use crate::Target;
 
@@ -17,6 +18,11 @@ use crate::Target;
 #[pyclass(name = "_ValueHandle", frozen, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyValueHandle(pub ValueHandle);
+
+/// Interpreter-local attachment of generated dictionary metadata to its Python class.
+#[pyclass(frozen)]
+#[derive(Debug)]
+pub(crate) struct ModelInfo(pub &'static crate::ModelBinding);
 
 /// Shared dictionary backing for all generated native Python model types.
 #[pyclass(subclass, frozen, skip_from_py_object)]
@@ -36,13 +42,20 @@ impl NativeDict {
 )]
 impl NativeDict {
     #[new]
+    #[classmethod]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "PyO3 extracts constructor handles as PyRef values."
     )]
-    fn new(handle: PyRef<'_, PyValueHandle>) -> PyResult<Self> {
+    fn new(class: &Bound<'_, PyType>, handle: PyRef<'_, PyValueHandle>) -> PyResult<Self> {
+        let binding = class
+            .getattr("_model_binding")?
+            .extract::<PyRef<'_, ModelInfo>>()?
+            .0;
         handle
             .0
+            .clone()
+            .with_model(binding)
             .as_dict()
             .map(Self)
             .ok_or_else(|| PyTypeError::new_err("value is not a dictionary"))
@@ -50,6 +63,26 @@ impl NativeDict {
 
     fn __bool__(&self) -> bool {
         !self.0.is_empty()
+    }
+
+    /// Whether the backing data supplies a non-null field, independently of accessor defaults.
+    fn _is_defined(&self, name: &str) -> PyResult<bool> {
+        let field = self
+            .0
+            .0
+            .field_binding(name)
+            .ok_or_else(|| PyAttributeError::new_err(name.to_owned()))?;
+        Ok(self.0.0.is_defined(field))
+    }
+
+    /// Whether the field uses a schema default or an implicit empty collection fallback.
+    fn _is_default(&self, name: &str) -> PyResult<bool> {
+        let field = self
+            .0
+            .0
+            .field_binding(name)
+            .ok_or_else(|| PyAttributeError::new_err(name.to_owned()))?;
+        Ok(self.0.0.is_default(field))
     }
 
     fn __richcmp__(
@@ -86,6 +119,7 @@ pub(crate) fn equality_result(py: Python<'_>, op: CompareOp, equal: bool) -> PyR
 pub(crate) struct ResolvedTarget {
     class: Option<Py<PyType>>,
     undefined: Py<PyAny>,
+    model: Option<&'static crate::ModelBinding>,
 }
 
 impl ResolvedTarget {
@@ -151,6 +185,10 @@ impl ResolvedTarget {
         Ok(Self {
             class,
             undefined: undefined.clone().unbind(),
+            model: match target {
+                Target::Model(model) => Some(model()),
+                _ => None,
+            },
         })
     }
 
@@ -160,11 +198,15 @@ impl ResolvedTarget {
         value: Option<ValueHandle>,
     ) -> PyResult<Py<PyAny>> {
         let Some(value) = value else {
-            return Ok(self.undefined.clone_ref(py));
+            return Ok(py.None());
         };
         if value.is_null() {
             return Ok(py.None());
         }
+        let value = match self.model {
+            Some(model) => value.with_model(model),
+            None => value,
+        };
         if let Some(class) = &self.class {
             return wrap_type(class.bind(py), value);
         }
@@ -172,6 +214,9 @@ impl ResolvedTarget {
             return Ok(scalar.into_pyobject(py)?.to_owned().unbind().into_any());
         }
         if let Some(scalar) = value.as_i64() {
+            return Ok(scalar.into_pyobject(py)?.unbind().into_any());
+        }
+        if let Some(scalar) = value.as_u64() {
             return Ok(scalar.into_pyobject(py)?.unbind().into_any());
         }
         if let Some(scalar) = value.as_str() {
@@ -194,13 +239,13 @@ impl ResolvedTarget {
 #[pyclass(frozen)]
 #[derive(Debug)]
 pub(crate) struct NativeField {
-    slot: u32,
+    binding: &'static crate::FieldBinding,
     target: ResolvedTarget,
 }
 
 impl NativeField {
-    pub(crate) fn new(slot: u32, target: ResolvedTarget) -> Self {
-        Self { slot, target }
+    pub(crate) fn new(binding: &'static crate::FieldBinding, target: ResolvedTarget) -> Self {
+        Self { binding, target }
     }
 }
 
@@ -221,7 +266,7 @@ impl NativeField {
         };
         let instance: PyRef<'_, NativeDict> = instance.extract()?;
         slf.target
-            .convert(slf.py(), instance.handle().field(slf.slot))
+            .convert(slf.py(), instance.handle().0.field(slf.binding))
     }
 
     #[allow(
@@ -243,7 +288,7 @@ impl NativeField {
     }
 }
 
-fn wrap_type(class: &Bound<'_, PyType>, value: ValueHandle) -> PyResult<Py<PyAny>> {
+pub(crate) fn wrap_type(class: &Bound<'_, PyType>, value: ValueHandle) -> PyResult<Py<PyAny>> {
     let handle = Py::new(class.py(), PyValueHandle(value))?;
     Ok(class.call1((handle,))?.unbind())
 }
@@ -252,7 +297,27 @@ fn wrap_type(class: &Bound<'_, PyType>, value: ValueHandle) -> PyResult<Py<PyAny
 pub fn wrap_named(
     module: &Bound<'_, PyModule>,
     name: &str,
-    value: ValueHandle,
+    value: validated_data::ValueHandle,
 ) -> PyResult<Py<PyAny>> {
-    wrap_type(&crate::catalog::resolve_python_type(module, name)?, value)
+    wrap_type(
+        &crate::catalog::resolve_python_type(module, name)?,
+        value.into(),
+    )
+}
+
+/// Wrap checked host data with borrowed schema-default access.
+///
+/// The caller must open the data using this schema's fingerprint and the generated registry,
+/// verify that the schema matches the generated code's schema fingerprint, and structurally
+/// check its root before calling. Descendants retain both archive owners.
+pub fn wrap_with_schema(
+    module: &Bound<'_, PyModule>,
+    name: &str,
+    value: validated_data::ValueHandle,
+    schemas: Arc<avdschema::Store>,
+) -> PyResult<Py<PyAny>> {
+    wrap_type(
+        &crate::catalog::resolve_python_type(module, name)?,
+        ValueHandle::from(value).with_schemas(schemas),
+    )
 }

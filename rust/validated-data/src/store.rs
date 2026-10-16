@@ -577,7 +577,8 @@ impl ValueHandle {
         }
     }
 
-    fn view(&self) -> ValueView<'_> {
+    /// Borrow the original archived value without default resolution or materialization.
+    pub fn view(&self) -> ValueView<'_> {
         ValueView {
             store: &self.store,
             id: self.id,
@@ -602,6 +603,11 @@ impl ValueHandle {
     /// Read an integer scalar.
     pub fn as_i64(&self) -> Option<i64> {
         self.view().as_i64()
+    }
+
+    /// Read a nonnegative integer scalar without narrowing an archived unsigned value.
+    pub fn as_u64(&self) -> Option<u64> {
+        self.view().as_u64()
     }
 
     /// Read a boolean scalar.
@@ -797,6 +803,14 @@ impl<'a> ValueView<'a> {
             _ => None,
         }
     }
+    /// Read a nonnegative integer scalar without narrowing an archived unsigned value.
+    pub fn as_u64(self) -> Option<u64> {
+        match self.node() {
+            ArchivedValueNode::U64(value) => Some(value.to_native()),
+            ArchivedValueNode::I64(value) => u64::try_from(value.to_native()).ok(),
+            _ => None,
+        }
+    }
     /// Read a boolean scalar.
     pub fn as_bool(self) -> Option<bool> {
         let ArchivedValueNode::Bool(value) = self.node() else {
@@ -815,7 +829,8 @@ impl<'a> ValueView<'a> {
 pub struct DictView<'a>(ValueView<'a>);
 
 impl<'a> DictView<'a> {
-    fn entries(self) -> impl Iterator<Item = (&'a str, ValueView<'a>)> {
+    /// Iterate supplied keys and values without applying defaults or allocating owned data.
+    pub fn entries(self) -> impl Iterator<Item = (&'a str, ValueView<'a>)> {
         let (start, len) = self.range();
         let archive = self.0.store.archived();
         archive
@@ -881,6 +896,15 @@ impl<'a> DictView<'a> {
 pub struct DictHandle(ValueHandle);
 
 impl DictHandle {
+    /// Borrow the supplied dictionary keys without materializing their values.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0
+            .view()
+            .as_dict()
+            .into_iter()
+            .flat_map(DictView::entries)
+            .map(|(key, _)| key)
+    }
     /// Whether no dictionary keys were supplied, including custom or unknown keys.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

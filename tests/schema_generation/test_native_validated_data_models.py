@@ -4,6 +4,7 @@
 
 """Attribute-derived bindings and stubs expose the same generated model identities."""
 
+import re
 from pathlib import Path
 
 from pyavd_utils_gen.validated_data_generation import generate_validated_data_models
@@ -26,7 +27,10 @@ def test_native_catalog_and_stub_generation_is_deterministic(tmp_path: Path) -> 
     assert pyi.read_bytes() == stub_before
     assert rust.read_text() == root_before
     assert modules_before == modules_after
-    assert 'python(name = "SchemaGenerationFixture")' in declarations
-    assert 'python(name = "SchemaGenerationFixture.InterfaceProfiles", item_name = "SchemaGenerationFixture.InterfaceProfilesItem")' in declarations
+    assert re.search(r'python\(name = "SchemaGenerationFixture", schema = Dict\(\d+\)\)', declarations)
+    assert re.search(
+        r'python\(name = "SchemaGenerationFixture.InterfaceProfiles", schema = List\(\d+\), item_name = "SchemaGenerationFixture.InterfaceProfilesItem"\)',
+        declarations,
+    )
     assert not (tmp_path / "models/native.rs").exists()
     assert "pub mod native;" not in root_before

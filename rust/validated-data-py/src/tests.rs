@@ -38,8 +38,8 @@ struct Item<'a, Mode> {
     name: RequiredValue<&'a str, Mode>,
 }
 
-// Rust-only descendants require no PythonModel implementation.
-#[data_view]
+// Dynamic targets need a named Python model for selector lookup.
+#[data_view(python(name = "Hidden"))]
 struct Hidden<'a, Mode> {}
 
 #[data_view(python(name = "ProtocolRoot"))]
@@ -162,7 +162,7 @@ item = root.devices['leaf']
 assert type(item) is AVDDesign.DevicesItem
 assert item.name == 'leaf'
 assert type(root.standalone) is AVDDesign.DevicesItemBase
-assert root.standalone.name is undefined
+assert root.standalone.name is None
 assert type(root.shared) is EOSConfig.Shared.Settings
 assert type(item.settings) is EOSConfig.Shared.Settings
 assert root.shared.enabled is False
@@ -402,9 +402,9 @@ fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
         py.run(
             c"\
 assert root.name == 'root'
-assert root.absent is undefined
+assert root.absent is None
 assert root.renamed == 'renamed'
-assert not hasattr(models, 'Hidden')
+assert hasattr(models, 'Hidden')
 assert not hasattr(models.Root, 'dynamic')
 assert hasattr(models.Root.name, '__get__')
 children = root.children
@@ -460,6 +460,7 @@ fn node_binding() -> &'static ModelBinding {
     };
     const NODE: ModelBinding = ModelBinding {
         name: "Node",
+        schema_id: None,
         descriptor: &validated_data::ModelDescriptor {
             identity: "gc_fixture::Node",
             kind: validated_data::ModelKind::Dict,
@@ -471,6 +472,7 @@ fn node_binding() -> &'static ModelBinding {
             name: "child",
             descriptor: &FIELD,
             target: Target::Model(node_binding),
+            schema_id: None,
         }],
         item: None,
         keyed_item_name: None,
@@ -499,12 +501,16 @@ fn binding_fields_reference_the_original_rust_descriptors() {
             .iter()
             .any(|candidate| matches!(candidate.target, Target::Opaque))
     );
-    assert!(
-        !root
-            .fields
-            .iter()
-            .any(|candidate| candidate.name == "dynamic")
+    let dynamic = root
+        .fields
+        .iter()
+        .find(|candidate| candidate.name == "dynamic")
+        .expect("grouped dynamic relationship");
+    assert_eq!(
+        dynamic.descriptor.relation,
+        validated_data::FieldRelation::DynamicKey("selectors.names")
     );
+    assert!(matches!(dynamic.target, Target::Model(target) if target().name == "Hidden"));
     assert_eq!(
         Children::<'static, validated_data::Validated>::binding()
             .descriptor

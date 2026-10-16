@@ -11,25 +11,62 @@
 //! value iteration and positional search helpers, but are not sequences: indexing and membership
 //! operate on primary keys. Equality compares complete ordered contents of the same nominal type.
 
+use crate::values::ListHandle;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList, PySlice, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, PyVisit};
-use validated_data::{ListHandle, PrimaryKeyValue};
+use validated_data::PrimaryKeyValue;
 
 use crate::descriptors::{PyValueHandle, ResolvedTarget, equality_result};
+
+/// Parse a collection default without conflating explicit None with omission.
+pub(crate) fn get_default(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Option<Py<PyAny>>> {
+    if args.len() > 1 {
+        return Err(PyTypeError::new_err("get accepts at most one default"));
+    }
+    let keyword = if let Some(kwargs) = kwargs {
+        let default = kwargs.get_item("default")?;
+        if kwargs.len() != usize::from(default.is_some()) {
+            return Err(PyTypeError::new_err("unexpected get keyword argument"));
+        }
+        default
+    } else {
+        None
+    };
+    if !args.is_empty() && keyword.is_some() {
+        return Err(PyTypeError::new_err("multiple values for default"));
+    }
+    if args.is_empty() {
+        Ok(keyword.map(Bound::unbind))
+    } else {
+        Ok(Some(args.get_item(0)?.unbind()))
+    }
+}
 
 #[pyclass(frozen)]
 #[derive(Debug)]
 pub(crate) struct CollectionInfo {
     target: ResolvedTarget,
     keys: Vec<u32>,
+    model: &'static crate::ModelBinding,
 }
 
 impl CollectionInfo {
-    pub(crate) fn new(target: ResolvedTarget, keys: Vec<u32>) -> Self {
-        Self { target, keys }
+    pub(crate) fn new(
+        target: ResolvedTarget,
+        keys: Vec<u32>,
+        model: &'static crate::ModelBinding,
+    ) -> Self {
+        Self {
+            target,
+            keys,
+            model,
+        }
     }
 }
 
@@ -57,11 +94,14 @@ pub(crate) struct NativeList {
 
 impl NativeList {
     fn construct(class: &Bound<'_, PyType>, handle: &PyValueHandle) -> PyResult<Self> {
+        let info = class.getattr("_binding")?.extract::<Py<CollectionInfo>>()?;
+        let model = info.borrow(class.py()).model;
         let handle = handle
             .0
+            .clone()
+            .with_model(model)
             .as_list()
             .ok_or_else(|| PyTypeError::new_err("value is not a list"))?;
-        let info = class.getattr("_binding")?.extract::<Py<CollectionInfo>>()?;
         Ok(Self { handle, info })
     }
 
@@ -300,26 +340,7 @@ impl NativeIndexedList {
     ) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let base = slf.into_super();
-        if args.len() > 1 {
-            return Err(PyTypeError::new_err("get accepts at most one default"));
-        }
-        let keyword = if let Some(kwargs) = kwargs {
-            let default = kwargs.get_item("default")?;
-            if kwargs.len() != usize::from(default.is_some()) {
-                return Err(PyTypeError::new_err("unexpected get keyword argument"));
-            }
-            default
-        } else {
-            None
-        };
-        if !args.is_empty() && keyword.is_some() {
-            return Err(PyTypeError::new_err("multiple values for default"));
-        }
-        let default = if args.is_empty() {
-            keyword.map(Bound::unbind)
-        } else {
-            Some(args.get_item(0)?.unbind())
-        };
+        let default = get_default(args, kwargs)?;
         Ok(base.lookup(py, key)?.unwrap_or_else(|| {
             default.unwrap_or_else(|| base.info.borrow(py).target.undefined(py))
         }))

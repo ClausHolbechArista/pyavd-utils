@@ -18,7 +18,7 @@ use pyo3::types::{PyDict, PyModule, PyType};
 use validated_data::{ArchiveModel, FieldDescriptor, ModelDescriptor, ModelKind};
 
 use crate::collections::{CollectionInfo, NativeIndexedList, NativeList};
-use crate::descriptors::{NativeDict, NativeField, ResolvedTarget};
+use crate::descriptors::{ModelInfo, NativeDict, NativeField, ResolvedTarget};
 
 /// Conversion to perform after reading a field or collection item.
 #[derive(Clone, Copy, Debug)]
@@ -34,7 +34,7 @@ pub enum Target {
     Opaque,
 }
 
-/// One Python property, paired with its original Rust field descriptor.
+/// One static property or grouped dynamic relationship and its Rust field descriptor.
 #[derive(Clone, Copy, Debug)]
 pub struct FieldBinding {
     /// Python property name, including keyword escaping.
@@ -43,6 +43,8 @@ pub struct FieldBinding {
     pub descriptor: &'static FieldDescriptor,
     /// Conversion used when the field is present and non-null.
     pub target: Target,
+    /// Effective schema position used for borrowed default lookup.
+    pub schema_id: Option<avdschema::SchemaId>,
 }
 
 /// Python exposure of one nominal model, derived alongside its typed Rust view.
@@ -53,9 +55,11 @@ pub struct ModelBinding {
     /// Dotted paths attach existing classes to their enclosing types. Missing ancestors are
     /// namespace-only classes for a referenced subtree, not additional archive-backed views.
     pub name: &'static str,
+    /// Effective schema node; meaningful only with a matching schema fingerprint.
+    pub schema_id: Option<avdschema::SchemaId>,
     /// Original model shape, field relationships, and primary-key slots.
     pub descriptor: &'static ModelDescriptor,
-    /// Statically exposed dictionary fields; dynamic relationships have no named property.
+    /// Static properties and dynamic relationships exposed through `_dynamic_keys` groups.
     pub fields: &'static [FieldBinding],
     /// Conversion for list items; absent for dictionaries and untyped lists.
     pub item: Option<Target>,
@@ -186,8 +190,9 @@ fn attach_python_hierarchy<'py>(
 /// Install the Python-visible models reachable from one generated root.
 ///
 /// Shared `PyO3` classes implement dictionary/list operations and property access. Registration
-/// creates nominal `CPython` subclasses and descriptors from the prepared metadata; relaxed and
-/// dynamic-only descendants are not registered. Child types and undefined values are cached in
+/// creates nominal `CPython` subclasses and descriptors from the prepared metadata. Dynamic
+/// descendants are registered through grouped namespaces; relaxed descendants stay opaque.
+/// Child types and undefined values are cached in
 /// interpreter-local, garbage-collected objects, not global Rust state.
 /// The module also exposes `_Model`, `_Collection`, `_List`, and `_IndexedList` aliases to the native
 /// bases for generated stub inheritance. Their generic parameters describe static typing only;
@@ -203,6 +208,10 @@ pub fn install_models<Model: PythonModel>(
     install_root(module, Model::binding(), opaque, undefined)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Model registration is kept in ordered phases so generated type dependencies and descriptors resolve consistently."
+)]
 pub(crate) fn install_root(
     module: &Bound<'_, PyModule>,
     root: &'static ModelBinding,
@@ -220,6 +229,14 @@ pub(crate) fn install_root(
     module.add("_Collection", py.get_type::<NativeList>())?;
     module.add("_List", py.get_type::<NativeList>())?;
     module.add("_IndexedList", py.get_type::<NativeIndexedList>())?;
+    module.add(
+        "_DynamicEntry",
+        py.get_type::<crate::dynamic::DynamicEntry>(),
+    )?;
+    module.add(
+        "_DynamicCollection",
+        py.get_type::<crate::dynamic::DynamicCollection>(),
+    )?;
     let mut types = BTreeMap::new();
     // Create every ordinary type first so schema order and forward references do not matter.
     for model in models.values() {
@@ -270,11 +287,35 @@ pub(crate) fn install_root(
             );
         }
     }
+    for model in models.values() {
+        if model.fields.iter().any(|field| {
+            matches!(
+                field.descriptor.relation,
+                validated_data::FieldRelation::DynamicKey(_)
+            )
+        }) {
+            let name = format!("{}._DynamicKeys", model.name);
+            let namespace = class_namespace(py, &module_name, &name)?;
+            let class = type_factory
+                .call1(("_DynamicKeys", (py.get_type::<NativeDict>(),), namespace))?
+                .cast_into::<PyType>()?;
+            if types.insert(name, class).is_some() {
+                return Err(PyValueError::new_err("conflicting dynamic namespace"));
+            }
+        }
+    }
     attach_python_hierarchy(module, &module_name, &type_factory, &mut types)?;
     for model in models.values() {
         let class = resolve_python_type(module, model.name)?;
         if model.descriptor.kind == ModelKind::Dict {
+            class.setattr("_model_binding", Py::new(py, ModelInfo(model))?)?;
             for field in model.fields {
+                if matches!(
+                    field.descriptor.relation,
+                    validated_data::FieldRelation::DynamicKey(_)
+                ) {
+                    continue;
+                }
                 if class.hasattr(field.name)? {
                     return Err(PyValueError::new_err(format!(
                         "conflicting Python property: {}.{}",
@@ -286,10 +327,22 @@ pub(crate) fn install_root(
                     Py::new(
                         py,
                         NativeField::new(
-                            field.descriptor.id,
+                            field,
                             ResolvedTarget::new(module, field.target, None, opaque, undefined)?,
                         ),
                     )?,
+                )?;
+            }
+            if model.fields.iter().any(|field| {
+                matches!(
+                    field.descriptor.relation,
+                    validated_data::FieldRelation::DynamicKey(_)
+                )
+            }) {
+                let namespace =
+                    resolve_python_type(module, &format!("{}._DynamicKeys", model.name))?;
+                crate::dynamic::install_namespace(
+                    module, model, &class, &namespace, opaque, undefined,
                 )?;
             }
         } else {
@@ -306,6 +359,7 @@ pub(crate) fn install_root(
                             undefined,
                         )?,
                         model.descriptor.primary_key_fields.to_vec(),
+                        model,
                     ),
                 )?,
             )?;

@@ -95,6 +95,8 @@ pub struct NominalField {
     pub relaxed: bool,
     /// Effective description.
     pub description: Option<String>,
+    /// Effective display name, used to name grouped dynamic-key APIs.
+    pub display_name: Option<String>,
 }
 /// One collection model used by generated APIs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -130,6 +132,8 @@ pub struct NominalModelIr {
     pub fields: Vec<NominalField>,
     /// Hash of all registry semantics consumed by generated code.
     pub registry_hash: [u8; 32],
+    /// Fingerprint of the combined runtime archive whose table IDs this registry uses.
+    pub schema_hash: [u8; 32],
 }
 
 /// Build a nominal registry without retaining a second schema graph.
@@ -146,6 +150,10 @@ pub fn build_nominal_model_ir(
 /// cross-schema reference from the primary schema then targets the existing referenced model
 /// instead of expanding another copy of its descendants. Same-schema references and references
 /// carrying local schema changes remain occurrence-specific.
+///
+/// Schema IDs address a combined compilation of the entire supplied source store, including
+/// roots not exposed as models. The returned schema fingerprint identifies that runtime archive;
+/// consumers must check it before using generated IDs for default or dynamic-key lookup.
 pub fn build_nominal_model_ir_with_reused_schemas(
     source: &StoreSource,
     schema_name: &str,
@@ -162,14 +170,18 @@ pub fn build_nominal_model_ir_with_reused_schemas(
         ));
     }
     let mut builder = Builder::new(reused_schema_names);
+    // Runtime views interpret table IDs in the combined archive, not independently compiled
+    // roots. Share one compilation across all traversals, including reusable schema catalogs.
+    let compiled = crate::compiled::CompiledStore::compile(source)?;
     let mut roots = IndexMap::new();
     for reused_schema_name in reused_schema_names {
-        let root = builder.traverse(source, reused_schema_name, false)?;
+        let root = builder.traverse(source, &compiled, reused_schema_name, false)?;
         roots.insert(reused_schema_name.clone(), root);
     }
-    let root = builder.traverse(source, schema_name, true)?;
+    let root = builder.traverse(source, &compiled, schema_name, true)?;
     roots.insert(schema_name.to_owned(), root);
-    Ok(builder.finish(root, roots))
+    let schema_hash = *blake3::hash(&compiled.to_bytes()?).as_bytes();
+    Ok(builder.finish(root, roots, schema_hash))
 }
 
 /// Serialize a nominal registry for an external artifact renderer.
@@ -301,6 +313,7 @@ impl SchemaVisitor for Builder {
                     .dict()
                     .is_some_and(|dict| dict.begin_relaxed_validation),
                 description: occurrence.common().description.clone(),
+                display_name: occurrence.common().display_name.clone(),
             });
         }
         self.parents.push(model.or(parent));
@@ -328,12 +341,17 @@ impl Builder {
     fn traverse(
         &mut self,
         source: &StoreSource,
+        compiled: &crate::compiled::CompiledStore,
         schema_name: &str,
         reuse_references: bool,
     ) -> Result<ModelId, CompileError> {
         schema_name.clone_into(&mut self.current_schema_name);
         self.reuse_references = reuse_references;
-        let traverser = SchemaTraverser::compile(source, schema_name)?;
+        let traverser = SchemaTraverser::with_compiled(
+            source,
+            schema_name,
+            std::borrow::Cow::Borrowed(compiled),
+        )?;
         traverser.traverse(self)?;
         self.models_by_path
             .get(&vec![schema_name.to_owned()])
@@ -345,7 +363,12 @@ impl Builder {
             })
     }
 
-    fn finish(self, root: ModelId, roots: IndexMap<String, ModelId>) -> NominalModelIr {
+    fn finish(
+        self,
+        root: ModelId,
+        roots: IndexMap<String, ModelId>,
+        schema_hash: [u8; 32],
+    ) -> NominalModelIr {
         let registry_hash = registry_hash(root, &self.models, &self.fields);
         NominalModelIr {
             root,
@@ -353,6 +376,7 @@ impl Builder {
             models: self.models,
             fields: self.fields,
             registry_hash,
+            schema_hash,
         }
     }
 }
@@ -514,6 +538,51 @@ fn hash_string(state: &mut blake3::Hasher, value: &str) {
 mod tests {
     use super::*;
     use crate::Load as _;
+
+    #[test]
+    fn generated_schema_ids_address_the_combined_runtime_store() {
+        // Each root has a different string default. Independent root compilation would give
+        // each string Str(0), silently reading another root's default from the runtime store.
+        let source = StoreSource::from_json(
+            r#"{"first":{"type":"dict","keys":{"name":{"type":"str","default":"first"}}},"external":{"type":"dict","keys":{"name":{"type":"str","default":"external"}}},"root":{"type":"dict","keys":{"name":{"type":"str","default":"root"},"shared":{"type":"dict","$ref":"external#"}}}}"#,
+        ).expect("valid source");
+        let store = crate::Store::compile(&source).expect("combined runtime store");
+        for reused in [vec![], vec!["external".to_owned()]] {
+            let ir = build_nominal_model_ir_with_reused_schemas(&source, "root", &reused)
+                .expect("registry");
+            assert_eq!(ir.schema_hash, store.archive_hash());
+            for field in ir
+                .fields
+                .iter()
+                .filter(|field| field.relation == FieldRelation::Key("name".to_owned()))
+            {
+                let model = ir
+                    .models
+                    .iter()
+                    .find(|model| model.id == field.parent)
+                    .expect("parent model");
+                let expected = model.path[0].as_str();
+                let expected = if model.path.last().map(String::as_str) == Some("shared") {
+                    "external"
+                } else {
+                    expected
+                };
+                let Some(crate::SchemaValueView::String(default)) = store
+                    .schema(field.schema_id)
+                    .and_then(crate::SchemaView::default)
+                else {
+                    panic!("field must address its archived string default");
+                };
+                assert_eq!(default, expected);
+                let Some(crate::SchemaView::Dict(schema)) = store.schema(model.schema_id) else {
+                    panic!("model must address its archived dictionary");
+                };
+                assert!(
+                    matches!(schema.key("name").and_then(crate::SchemaView::default), Some(crate::SchemaValueView::String(value)) if value == expected)
+                );
+            }
+        }
+    }
 
     #[test]
     fn shared_structures_keep_distinct_occurrence_identity() {
