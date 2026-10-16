@@ -93,8 +93,8 @@ repos:
         args:
           - --locked
           - --all-features
-          - check
           - --exclude-dev
+          - check
           - licenses
         files: ^rust/
       - id: cargo-about
