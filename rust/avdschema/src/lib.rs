@@ -68,6 +68,7 @@ mod resolve;
     reason = "Legacy source schema model API predates missing-doc enforcement."
 )]
 mod schema;
+mod source_layers;
 #[allow(
     missing_docs,
     reason = "Legacy schema source loading API predates missing-doc enforcement."

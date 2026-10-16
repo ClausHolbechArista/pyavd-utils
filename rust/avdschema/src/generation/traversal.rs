@@ -9,7 +9,10 @@
 //! whether a consumer wants to inspect its descendants. This module combines
 //! those two perspectives while walking the schema. It deliberately does not
 //! retain a second graph: occurrence state exists only for the duration of a
-//! visitor call, and children are resolved only when the visitor requests them.
+//! visitor call. The selected schema is compiled completely before traversal;
+//! pruning avoids descendant occurrence expansion, not schema compilation.
+//! Generation policies do not participate in runtime validation or change the
+//! runtime archive layout.
 
 #![allow(
     clippy::as_conversions,
@@ -30,7 +33,7 @@ use crate::compiled::DictSchema;
 use crate::compiled::ListSchema;
 use crate::compiled::SchemaId;
 use crate::dict::SourceRootDict;
-use crate::resolve::resolve_ref::resolve_ref;
+use crate::source_layers::expand_layers;
 
 /// Identifies how an occurrence is connected to its parent schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +55,52 @@ pub(crate) enum TraversalControl {
     Descend,
     /// Return to the parent without resolving or visiting any children.
     SkipChildren,
+}
+
+/// Policy for dictionary documentation boundaries during generation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HiddenKeysPolicy {
+    /// Visit children regardless of dictionary documentation settings.
+    Expand,
+    /// Preserve Markdown's direct rendering of nonempty dictionary item keys.
+    PruneExceptDictionaryItems,
+}
+
+/// Shared traversal policies configured by each generator.
+///
+/// Visitors can additionally prune occurrences based on consumer-specific
+/// knowledge, such as whether a Python model already exists for a reference.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TraversalConfig {
+    /// Whether dictionary documentation boundaries suppress descent.
+    pub hidden_keys: HiddenKeysPolicy,
+    /// Whether removed fields are visited at all. The root is always visited.
+    pub include_removed: bool,
+}
+
+impl TraversalConfig {
+    /// Decide whether policy permits descent after the visitor enters an occurrence.
+    ///
+    /// Hidden boundaries still receive `enter` and `leave` callbacks. The
+    /// dictionary-item exception preserves Markdown's direct rendering of
+    /// nonempty item keys independently of the item's `hide_keys` setting.
+    fn should_descend(self, occurrence: &SchemaOccurrence<'_>) -> bool {
+        let hidden = occurrence
+            .common()
+            .documentation_options
+            .as_ref()
+            .is_some_and(|options| options.hide_keys);
+        if !hidden {
+            return true;
+        }
+        match self.hidden_keys {
+            HiddenKeysPolicy::Expand => true,
+            HiddenKeysPolicy::PruneExceptDictionaryItems => {
+                occurrence.relation() == SchemaRelation::Items
+                    && occurrence.dict().is_some_and(|dict| !dict.keys.is_empty())
+            }
+        }
+    }
 }
 
 /// Effective schema data and source context for one visited occurrence.
@@ -133,7 +182,7 @@ pub(crate) trait SchemaVisitor {
     fn leave(&mut self, occurrence: &SchemaOccurrence<'_>) -> Result<(), Self::Error>;
 }
 
-/// Compiled schema paired with a lazy, occurrence-aware traversal strategy.
+/// Compiled schema paired with an occurrence-aware generation traversal.
 ///
 /// Constructing a traverser performs complete schema compilation, including
 /// reference and type validation. Walking is separate: it recreates only the
@@ -183,17 +232,27 @@ impl<'a> SchemaTraverser<'a> {
         &self.compiled
     }
 
-    /// Visit the root and all descendants requested by `visitor`.
-    pub(crate) fn traverse<V: SchemaVisitor>(&self, visitor: &mut V) -> Result<(), V::Error> {
+    /// Visit occurrences allowed by both the generation policy and the visitor.
+    pub(crate) fn traverse<V: SchemaVisitor>(
+        &self,
+        visitor: &mut V,
+        config: TraversalConfig,
+    ) -> Result<(), V::Error> {
         self.visit(
             &[SourceLayer::root(self.root_source)],
             self.root_id,
             vec![self.schema_name.to_owned()],
             SchemaRelation::Root,
             visitor,
+            config,
         )
     }
 
+    /// Visit one occurrence and any descendants permitted by both policies.
+    ///
+    /// Removed non-root occurrences are excluded before either visitor callback.
+    /// Hidden-key boundaries instead suppress only descendants: a successful
+    /// `enter` is paired with `leave` when traversal completes without error.
     fn visit<V: SchemaVisitor>(
         &self,
         declared_layers: &[SourceLayer<'a>],
@@ -201,7 +260,17 @@ impl<'a> SchemaTraverser<'a> {
         path: Vec<String>,
         relation: SchemaRelation<'_>,
         visitor: &mut V,
+        config: TraversalConfig,
     ) -> Result<(), V::Error> {
+        if !config.include_removed
+            && relation != SchemaRelation::Root
+            && common(&self.compiled, schema_id)
+                .deprecation
+                .as_ref()
+                .is_some_and(|deprecation| deprecation.removed)
+        {
+            return Ok(());
+        }
         let layers = expand_layers(self.source, declared_layers, &path)?;
         let pure_references = layers
             .iter()
@@ -217,18 +286,25 @@ impl<'a> SchemaTraverser<'a> {
             pure_references,
         };
 
-        if visitor.enter(&occurrence)? == TraversalControl::Descend {
-            self.visit_children(&layers, schema_id, &path, visitor)?;
+        if visitor.enter(&occurrence)? == TraversalControl::Descend
+            && config.should_descend(&occurrence)
+        {
+            self.visit_children(&layers, schema_id, &path, visitor, config)?;
         }
         visitor.leave(&occurrence)
     }
 
+    /// Visit children in compiled schema order with their declared source layers.
+    ///
+    /// Source context is reconstructed only for visited occurrences; anonymous
+    /// list items and static or dynamic dictionary keys retain distinct relations.
     fn visit_children<V: SchemaVisitor>(
         &self,
         layers: &[SourceLayer<'a>],
         schema_id: SchemaId,
         path: &[String],
         visitor: &mut V,
+        config: TraversalConfig,
     ) -> Result<(), V::Error> {
         match schema_id {
             SchemaId::Bool(_) | SchemaId::Int(_) | SchemaId::Str(_) => Ok(()),
@@ -251,6 +327,7 @@ impl<'a> SchemaTraverser<'a> {
                         path_with(path, "items"),
                         SchemaRelation::Items,
                         visitor,
+                        config,
                     )?;
                 }
                 Ok(())
@@ -270,6 +347,7 @@ impl<'a> SchemaTraverser<'a> {
                         path_with(&path_with(path, "keys"), name),
                         SchemaRelation::Key(name),
                         visitor,
+                        config,
                     )?;
                 }
                 let dynamic_key_layers = dict_child_layers(layers, true);
@@ -285,6 +363,7 @@ impl<'a> SchemaTraverser<'a> {
                         path_with(&path_with(path, "dynamic_keys"), name),
                         SchemaRelation::DynamicKey(name),
                         visitor,
+                        config,
                     )?;
                 }
                 Ok(())
@@ -316,51 +395,6 @@ fn dict_child_layers<'a>(
         }
     }
     children
-}
-
-fn expand_layers<'a>(
-    store: &'a StoreSource,
-    declared_layers: &[SourceLayer<'a>],
-    path: &[String],
-) -> Result<Vec<SourceLayer<'a>>, CompileError> {
-    let Some(first) = declared_layers.first().copied() else {
-        return Err(SchemaDiagnostic::StructuralCycle {
-            schema_path: path.to_vec(),
-        }
-        .into());
-    };
-    let mut result = Vec::new();
-    for declared in declared_layers {
-        let mut layer = *declared;
-        let mut chain = Vec::new();
-        loop {
-            if first.schema_type() != layer.schema_type() {
-                return Err(SchemaDiagnostic::TypeMismatch {
-                    expected: first.schema_type().as_str(),
-                    found: layer.schema_type().as_str(),
-                }
-                .into());
-            }
-            chain.push(layer.identity());
-            result.push(layer);
-            let Some(reference) = layer.schema_ref() else {
-                break;
-            };
-            layer = resolve_ref(reference, store).map_err(|error| SchemaDiagnostic::Reference {
-                schema_path: path.to_vec(),
-                reference: reference.to_owned(),
-                error,
-            })?;
-            if chain.contains(&layer.identity()) {
-                return Err(SchemaDiagnostic::ReferenceCycle {
-                    schema_path: path.to_vec(),
-                    reference: reference.to_owned(),
-                }
-                .into());
-            }
-        }
-    }
-    Ok(result)
 }
 
 fn is_pure_reference(layer: &SourceLayer<'_>) -> bool {
@@ -434,10 +468,12 @@ fn path_with(path: &[String], element: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::HiddenKeysPolicy;
     use super::SchemaOccurrence;
     use super::SchemaRelation;
     use super::SchemaTraverser;
     use super::SchemaVisitor;
+    use super::TraversalConfig;
     use super::TraversalControl;
     use crate::Load as _;
     use crate::StoreSource;
@@ -495,7 +531,15 @@ mod tests {
         let traverser = SchemaTraverser::compile(&store, "model").unwrap();
         let mut visitor = RecordingVisitor::default();
 
-        traverser.traverse(&mut visitor).unwrap();
+        traverser
+            .traverse(
+                &mut visitor,
+                TraversalConfig {
+                    hidden_keys: HiddenKeysPolicy::Expand,
+                    include_removed: true,
+                },
+            )
+            .unwrap();
 
         assert_eq!(
             visitor.visits,
