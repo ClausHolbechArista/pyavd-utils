@@ -22,9 +22,12 @@ static TEST_ARCHIVE_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 fn get_store_archive_path() -> &'static std::path::PathBuf {
     TEST_ARCHIVE_PATH.get_or_init(|| {
-        let source_path = test_schema_store::get_store_gz_path();
+        let source_path = test_schema_store::get_store_path();
         let source = StoreSource::from_file(Some(source_path)).unwrap();
-        let archive_path = source_path.with_file_name("schemas.rkyv");
+        let archive_path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test_schema_store/tmp/schemas.rkyv"
+        ));
         Store::compile_to_file(&source, &archive_path).unwrap();
         archive_path
     })
