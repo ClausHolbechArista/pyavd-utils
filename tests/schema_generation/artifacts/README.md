@@ -6,11 +6,10 @@
 
 # Schema generation fixture
 
-`schemas.json` is a reduced schema store copied from the AVD schemas. It keeps
-the resolved accounting-methods reference, the retained cross-schema
-authentication model reference, and the representative `interface_profiles`
-model while remaining small enough to make generated-source diffs useful
-during the generator experiment.
+The source schemas are in [`../../schemas/schemas.json`](../../schemas/schemas.json),
+shared with the Rust and Python validation and schema-store tests. The generation
+schemas retain the accounting-methods definition reference, cross-schema
+authentication model reference, and representative `interface_profiles` model.
 
 The regeneration test deliberately writes `schemas.rkyv` and
 `schema_generation_fixture.py.expected` back into this directory, including

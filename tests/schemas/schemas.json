@@ -35,7 +35,10 @@
             "method": {
               "type": "str",
               "required": true,
-              "valid_values": ["logging", "group"]
+              "valid_values": [
+                "logging",
+                "group"
+              ]
             },
             "group": {
               "type": "str",
@@ -74,7 +77,10 @@
               "type": "int",
               "min": 1,
               "max": 100,
-              "valid_values": [10, 20],
+              "valid_values": [
+                10,
+                20
+              ],
               "default": 10
             },
             "mode": {
@@ -83,8 +89,13 @@
               "max_length": 20,
               "format": "ipv4",
               "convert_to_lower_case": true,
-              "valid_values": ["active", "passive"],
-              "dynamic_valid_values": ["custom_modes"],
+              "valid_values": [
+                "active",
+                "passive"
+              ],
+              "dynamic_valid_values": [
+                "custom_modes"
+              ],
               "pattern": "^[a-z]+$",
               "deprecation": {
                 "warning": true,
@@ -103,10 +114,16 @@
             },
             "opaque": {
               "type": "dict",
-              "default": {"enabled": true},
-              "documentation_options": {"hide_keys": true},
+              "default": {
+                "enabled": true
+              },
+              "documentation_options": {
+                "hide_keys": true
+              },
               "keys": {
-                "enabled": {"type": "bool"}
+                "enabled": {
+                  "type": "bool"
+                }
               }
             }
           }
@@ -116,14 +133,20 @@
         "type": "str",
         "required": true,
         "default": "value",
-        "documentation_options": {"table": "standalone"}
+        "documentation_options": {
+          "table": "standalone"
+        }
       }
     },
     "dynamic_keys": {
       "profile_types.name": {
         "type": "list",
-        "documentation_options": {"table": "dynamic-profiles"},
-        "items": {"type": "str"}
+        "documentation_options": {
+          "table": "dynamic-profiles"
+        },
+        "items": {
+          "type": "str"
+        }
       }
     }
   },
@@ -136,7 +159,11 @@
         "keys": {
           "type": {
             "type": "str",
-            "valid_values": ["none", "start-stop", "stop-only"],
+            "valid_values": [
+              "none",
+              "start-stop",
+              "stop-only"
+            ],
             "required": true
           },
           "methods": {
@@ -187,6 +214,145 @@
             }
           }
         }
+      }
+    }
+  },
+  "avd_design": {
+    "type": "dict",
+    "allow_other_keys": true,
+    "keys": {
+      "fabric_name": {
+        "type": "str",
+        "required": true
+      },
+      "node_type_keys": {
+        "type": "list",
+        "primary_key": "key",
+        "items": {
+          "type": "dict",
+          "keys": {
+            "key": {
+              "type": "str"
+            }
+          }
+        }
+      },
+      "connected_endpoints_keys": {
+        "type": "list",
+        "primary_key": "key",
+        "items": {
+          "type": "dict",
+          "keys": {
+            "key": {
+              "type": "str"
+            }
+          }
+        }
+      },
+      "network_services_keys": {
+        "type": "list",
+        "primary_key": "name",
+        "items": {
+          "type": "dict",
+          "keys": {
+            "name": {
+              "type": "str"
+            }
+          }
+        }
+      }
+    }
+  },
+  "eos_config": {
+    "type": "dict",
+    "allow_other_keys": false,
+    "keys": {
+      "ethernet_interfaces": {
+        "type": "list",
+        "primary_key": "name",
+        "items": {
+          "type": "dict",
+          "allow_other_keys": false,
+          "keys": {
+            "name": {
+              "type": "str"
+            },
+            "description": {
+              "type": "str",
+              "convert_types": [
+                "int"
+              ]
+            }
+          }
+        }
+      },
+      "access_lists": {
+        "type": "list",
+        "primary_key": "name",
+        "items": {
+          "type": "dict",
+          "keys": {
+            "name": {
+              "type": "str"
+            },
+            "sequence_numbers": {
+              "type": "list",
+              "primary_key": "sequence",
+              "items": {
+                "type": "dict",
+                "keys": {
+                  "sequence": {
+                    "type": "int"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "hostname": {
+        "type": "str"
+      },
+      "config_end": {
+        "type": "bool"
+      },
+      "ip_access_lists_max_entries": {
+        "type": "int"
+      },
+      "custom_templates": {
+        "type": "list",
+        "items": {
+          "type": "str"
+        }
+      },
+      "router_isis": {
+        "type": "dict",
+        "keys": {
+          "instance": {
+            "type": "str"
+          }
+        }
+      },
+      "avd_structured_config_file_format": {
+        "type": "str"
+      },
+      "eos_cli_config_gen_configuration": {
+        "type": "str"
+      },
+      "eos_cli_config_gen_documentation": {
+        "type": "str"
+      },
+      "eos_cli_config_gen_keep_tmp_files": {
+        "type": "bool"
+      },
+      "eos_cli_config_gen_tmp_dir": {
+        "type": "str"
+      },
+      "eos_cli_config_gen_validate_inputs_batch_size": {
+        "type": "int"
+      },
+      "read_structured_config_from_file": {
+        "type": "str"
       }
     }
   }

@@ -3,33 +3,17 @@
 // that can be found in the LICENSE file.
 #![deny(unused_crate_dependencies)]
 
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-const CRATE_DIR: &str = env!("CARGO_MANIFEST_DIR");
-const ADV_SCHEMA_URL: &str =
-    "https://github.com/aristanetworks/avd/releases/download/v6.1.0/schemas.json.gz";
+static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-static STORE_GZ_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-pub fn initialize() -> PathBuf {
-    let resp = reqwest::blocking::get(ADV_SCHEMA_URL).unwrap();
-    let body = resp.bytes().unwrap();
-    let path = _get_store_gz_path();
-    let file = std::fs::File::create(&path).unwrap();
-    let mut writer = std::io::BufWriter::new(file);
-    writer.write_all(&body).unwrap();
-    path
-}
-
-fn _get_store_gz_path() -> PathBuf {
-    let url = reqwest::Url::parse(ADV_SCHEMA_URL).unwrap();
-    let url_as_path = PathBuf::from(url.path());
-    let filename = url_as_path.file_name().unwrap();
-    PathBuf::from(CRATE_DIR).join("tmp").join(filename)
-}
-
-pub fn get_store_gz_path() -> &'static PathBuf {
-    STORE_GZ_PATH.get_or_init(initialize)
+/// Source store shared by the Rust and Python tests in this checkout.
+pub fn get_store_path() -> &'static PathBuf {
+    STORE_PATH.get_or_init(|| {
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/schemas/schemas.json"
+        ))
+    })
 }
