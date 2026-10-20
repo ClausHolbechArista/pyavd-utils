@@ -31,6 +31,15 @@ license = "MIT"
 path = "LICENSE-MIT.md"
 checksum = "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d"
 
+# PyO3 bundles a byte-identical copy under pyo3-runtime/. Select the root
+# notice to avoid duplicate usage entries: EmbarkStudios/cargo-about#327.
+[pyo3.clarify]
+license = "MIT"
+
+[[pyo3.clarify.files]]
+path = "LICENSE-MIT"
+checksum = "afcbe3b2e6b37172b5a9ca869ee4c0b8cdc09316e5d4384864154482c33e5af6"
+
 [self_cell.clarify]
 license = "Apache-2.0"
 
