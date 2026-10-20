@@ -37,3 +37,18 @@ license = "Apache-2.0"
 [[self_cell.clarify.files]]
 path = "LICENSE-APACHE"
 checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+# Preserve schemars's own license and the notice for copied regex-syntax code,
+# without including the surrounding Rust source in the generated reports.
+[schemars.clarify]
+license = "MIT"
+
+[[schemars.clarify.files]]
+path = "LICENSE"
+checksum = "1954992a2b32e8a2af24a4c11b726902e344c1934b947a77f04d404908f8db30"
+
+[[schemars.clarify.files]]
+path = "src/_private/regex_syntax.rs"
+start = "// Copyright (c) 2014 The Rust Project Developers"
+end = "// DEALINGS IN THE SOFTWARE."
+checksum = "271f2624842bf6b1d1b3a78e7b82693ad2cd2741480da32117a5169e58843392"
