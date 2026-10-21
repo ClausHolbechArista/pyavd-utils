@@ -8,10 +8,90 @@ from pathlib import Path
 
 import pytest
 
-from pyavd_utils_gen.schema_generation import generate_schema_explorer_jsonl, generate_schema_explorer_jsonl_from_paths
+from pyavd_utils_gen.schema_generation import (
+    generate_schema_documentation,
+    generate_schema_explorer_jsonl,
+    generate_schema_explorer_jsonl_from_paths,
+)
 
 ARTIFACTS = Path(__file__).parent / "artifacts"
 SOURCE = ARTIFACTS / "schema_explorer_fixture.json"
+
+
+@pytest.mark.parametrize("root_table_source", ["none", "explicit", "reference"])
+def test_documentation_tables_match_markdown_grouping(tmp_path: Path, root_table_source: str) -> None:
+    """Both projections inherit tables through roots, fields, and anonymous items."""
+    root_table = None if root_table_source == "none" else "root-table"
+    expected = {
+        "top_level": root_table or "top-level",
+        "nested.inherited": root_table or "nested",
+        "nested.overridden": "child-table",
+        "nested.section.value": "section-table",
+        "entries[].inherited": "item-table",
+        "entries[].overridden": "child-table",
+        "<selector_names.key>.inherited": root_table or "selector-names.key",
+    }
+
+    def leaf(path: str, table: str | None = None) -> dict:
+        schema: dict[str, object] = {"type": "str", "description": f"Marker for {path}."}
+        if table is not None:
+            schema["documentation_options"] = {"table": table}
+        return schema
+
+    model: dict[str, object] = {
+        "type": "dict",
+        "keys": {
+            "top_level": leaf("top_level"),
+            "nested": {
+                "type": "dict",
+                "keys": {
+                    "inherited": leaf("nested.inherited"),
+                    "overridden": leaf("nested.overridden", "child-table"),
+                    "section": {
+                        "type": "dict",
+                        "documentation_options": {"table": "section-table"},
+                        "keys": {"value": leaf("nested.section.value")},
+                    },
+                },
+            },
+            "entries": {
+                "type": "list",
+                "items": {
+                    "type": "dict",
+                    "documentation_options": {"table": "item-table"},
+                    "keys": {
+                        "inherited": leaf("entries[].inherited"),
+                        "overridden": leaf("entries[].overridden", "child-table"),
+                    },
+                },
+            },
+        },
+        "dynamic_keys": {
+            "selector_names.key": {"type": "dict", "keys": {"inherited": leaf("<selector_names.key>.inherited")}},
+        },
+    }
+    if root_table_source == "explicit":
+        model["documentation_options"] = {"table": root_table}
+    elif root_table_source == "reference":
+        model["$ref"] = "shared#"
+    source = tmp_path / "schemas.json"
+    source.write_text(
+        json.dumps({"model": model, "shared": {"type": "dict", "documentation_options": {"table": "root-table"}}}),
+        encoding="UTF-8",
+    )
+    output = tmp_path / "schema.jsonl"
+    generate_schema_explorer_jsonl(source, ["model"], output)
+    rows = {row["key_path"]: row for row in map(json.loads, output.read_text(encoding="UTF-8").splitlines())}
+    destination = tmp_path / "markdown"
+    generate_schema_documentation(source, "model", destination)
+    markdown = {path.stem: path.read_text(encoding="UTF-8") for path in destination.glob("*.md")}
+
+    for path, table in expected.items():
+        assert rows[path]["doc_table"] == table
+        # Scalar non-primary fields are not repeated as ancestor/primary-key context.
+        assert {name for name, content in markdown.items() if f"Marker for {path}." in content} == {table}
+    assert rows["entries"]["doc_table"] == (root_table or "entries")
+    assert rows["<selector_names.key>"]["doc_table"] == (root_table or "selector-names.key")
 
 
 @pytest.fixture

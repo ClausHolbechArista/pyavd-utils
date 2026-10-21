@@ -4,6 +4,7 @@
 
 //! Schema traversal and artifact generators.
 
+mod documentation_context;
 mod explorer;
 mod legacy_python;
 mod markdown;

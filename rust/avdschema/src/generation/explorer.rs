@@ -29,6 +29,7 @@ use crate::compiled::CompiledStore;
 use crate::compiled::CompiledStringFormat;
 use crate::compiled::CompiledValue;
 use crate::compiled::SchemaId;
+use crate::generation::documentation_context::documentation_table;
 use crate::generation::traversal::HiddenKeysPolicy;
 use crate::generation::traversal::SchemaOccurrence;
 use crate::generation::traversal::SchemaRelation;
@@ -115,7 +116,7 @@ struct ExplorerFrame {
     path: String,
     parent_field: String,
     depth: usize,
-    table: String,
+    table: Option<String>,
     schema_id: SchemaId,
     primary_key: Option<String>,
     unique_primary_key: bool,
@@ -146,7 +147,7 @@ impl SchemaVisitor for ExplorerProjection<'_> {
                 path: String::new(),
                 parent_field: String::new(),
                 depth: 0,
-                table: String::new(),
+                table: documentation_table(occurrence.common(), None, None),
                 schema_id: occurrence.schema_id(),
                 primary_key: None,
                 unique_primary_key: false,
@@ -156,12 +157,6 @@ impl SchemaVisitor for ExplorerProjection<'_> {
         let Some(parent) = self.stack.last() else {
             unreachable!("a non-root occurrence has an ancestor frame");
         };
-        let common = occurrence.common();
-        let table = common
-            .documentation_options
-            .as_ref()
-            .and_then(|options| options.table.clone())
-            .unwrap_or_else(|| parent.table.clone());
         if occurrence.relation() == SchemaRelation::Items {
             let list = match parent.schema_id {
                 SchemaId::List(index) => &self.compiled.lists[index as usize],
@@ -171,7 +166,7 @@ impl SchemaVisitor for ExplorerProjection<'_> {
                 path: format!("{}[]", parent.path),
                 parent_field: parent.parent_field.clone(),
                 depth: parent.depth,
-                table,
+                table: documentation_table(occurrence.common(), parent.table.as_deref(), None),
                 schema_id: occurrence.schema_id(),
                 primary_key: list.primary_key.clone(),
                 unique_primary_key: !list.allow_duplicate_primary_key,
@@ -188,11 +183,11 @@ impl SchemaVisitor for ExplorerProjection<'_> {
         } else {
             format!("{}.{name}", parent.path)
         };
-        let table = if table.is_empty() && parent.depth == 0 {
-            name.replace(['<', '>'], "").replace('_', "-")
-        } else {
-            table
-        };
+        let table = documentation_table(
+            occurrence.common(),
+            parent.table.as_deref(),
+            (parent.depth == 0).then_some(name.as_str()),
+        );
         self.rows.push(field_row(
             self.compiled,
             self.module,
@@ -200,7 +195,7 @@ impl SchemaVisitor for ExplorerProjection<'_> {
             occurrence,
             &name,
             &path,
-            &table,
+            table.as_deref().unwrap_or_default(),
         ));
         self.stack.push(ExplorerFrame {
             path: path.clone(),
