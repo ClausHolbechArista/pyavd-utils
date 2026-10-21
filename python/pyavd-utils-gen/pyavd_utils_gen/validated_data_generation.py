@@ -8,10 +8,14 @@ Each schema has a public root class. Dictionary children, collections, and item 
 inside their source hierarchy; references retain canonical identities across schema roots.
 Primary-key collections return thin item subclasses strengthening key presence without
 changing the reusable item model or duplicating its field descriptors and data access.
+Python declarations form a stub-only package: one module per schema root, shared native
+base contracts, and an initializer exposing the native module's public API. Splitting those
+declarations does not create Python runtime modules or change native class identities.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import keyword
@@ -103,7 +107,10 @@ def generate_validated_data_models(
         rust_destination: Destination for the Rust model registry root. Generated schema modules
             are written below a sibling directory with the same stem, replacing any previous
             generated module tree.
-        pyi_destination: Destination for the corresponding Python declarations.
+        pyi_destination: Generated stub-package directory. Its initializer re-exports the
+            public roots; each root has its own module and shares bases from ``_base.pyi``.
+            Files directly inside this directory ending in ``.pyi`` are generator-owned.
+            This directory must be outside the generated Rust module tree.
         rust_root_name: Public Rust name of the root model, using Rust naming conventions.
         python_root_name: Public Python name of the root model, using Python naming conventions.
         root_keys: Optional static root keys to expose. Descendants of selected keys
@@ -113,6 +120,10 @@ def generate_validated_data_models(
             reused for pure cross-schema references. Values contain the Rust and Python
             root names respectively.
     """
+    rust_module_directory = rust_destination.with_suffix("").resolve()
+    if pyi_destination.resolve().is_relative_to(rust_module_directory):
+        msg = "The stub package must be outside the generated Rust module tree"
+        raise ValueError(msg)
     reused_schemas = reused_schemas or {}
     registry = build_nominal_model_registry(source, schema_name, list(reused_schemas))
     python_root_names = {name: names[1] for name, names in reused_schemas.items()} | {schema_name: python_root_name}
@@ -127,7 +138,14 @@ def generate_validated_data_models(
     root_model = int(registry["root"])
     rust_sources = _render_rust(registry, models, fields, rust_root_names, names)
     _write_rust(rust_destination, rust_sources)
-    pyi_destination.write_text(_render_pyi(models, fields, names, rust_root_name, root_model), encoding="UTF-8")
+    root_modules = {python_root_names[schema]: _rust_module_identifier(root_name) for schema, root_name in rust_root_names.items()}
+    stubs = _render_pyi(models, fields, names, rust_root_name, root_model, root_modules)
+    pyi_destination.mkdir(parents=True, exist_ok=True)
+    for path in pyi_destination.glob("*.pyi"):
+        if path.name not in stubs:
+            path.unlink()
+    for filename, content in stubs.items():
+        (pyi_destination / filename).write_text(content, encoding="UTF-8")
 
 
 def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[str, Any]:
@@ -348,6 +366,13 @@ def _render_rust(
     root_names: dict[str, str],
     names: dict[int, str],
 ) -> dict[tuple[str, ...], str]:
+    """
+    Render schema roots and one source file per locally defined root-level model.
+
+    Each key's file contains its model and all descendant namespaces. Schema-root modules
+    re-export the file's model while keeping its module public for naming descendant types.
+    File ownership follows schema keys, independently of documentation grouping.
+    """
     root_modules = {schema_name: _rust_module_identifier(root_name) for schema_name, root_name in root_names.items()}
     models_by_id = {int(model["id"]): model for model in models}
     by_parent: dict[int, list[dict[str, Any]]] = {}
@@ -437,7 +462,12 @@ def _render_rust_model(
     module_outputs: dict[tuple[str, ...], list[str]],
     python_names: dict[int, str],
 ) -> list[str]:
-    """Render one nominal model and recursively nest its child occurrences."""
+    """
+    Render one nominal model, using files only at the schema root's immediate keys.
+
+    Descendant modules stay inline in their root key's file. ``scope`` tracks the Rust module
+    containing the declaration, so references remain correct when a file owns its root model.
+    """
     if model_id in visited:
         msg = f"nominal model {model_id} is reachable from more than one relationship"
         raise ValueError(msg)
@@ -513,18 +543,12 @@ def _render_rust_model(
     if not model_fields:
         return output
 
-    child_output = output
     child_indent = indent
     inline_namespace = False
     if namespace_name is not None:
-        if len(scope) == 1:
-            output.append(f"\n{indent}pub mod {namespace_name};\n")
-            child_output = module_outputs.setdefault((*scope, namespace_name), [])
-            child_indent = ""
-        else:
-            output.append(f"\n{indent}pub mod {namespace_name} {{\n")
-            child_indent += "    "
-            inline_namespace = True
+        output.append(f"\n{indent}pub mod {namespace_name} {{\n")
+        child_indent += "    "
+        inline_namespace = True
     for field in model_fields:
         target_kind, target = _target(field)
         if target_kind != "Model":  # pragma: no cover - filtered above
@@ -534,8 +558,29 @@ def _render_rust_model(
         if str(target_model["path"][0]) != schema_name:
             continue
         module_name, child_type_name = child_names[int(field["id"])]
-        child_output.append("\n")
-        child_output.extend(
+        if len(scope) == 1:
+            output.append(f"\n{indent}pub mod {module_name};\n")
+            output.append(f"{indent}pub use {module_name}::{child_type_name};\n")
+            module_outputs[(*scope, module_name)] = _render_rust_model(
+                target_id,
+                child_type_name,
+                None,
+                schema_name,
+                (*scope, module_name),
+                models,
+                by_parent,
+                locations,
+                visited,
+                "",
+                module_outputs,
+                python_names,
+            )
+            # Other schemas use the parent facade for this model. Its descendants retain
+            # their public module paths, such as devices::Item.
+            locations[target_id] = (*scope, child_type_name)
+            continue
+        output.append("\n")
+        output.extend(
             _render_rust_model(
                 target_id,
                 child_type_name,
@@ -824,22 +869,25 @@ def _render_pyi(
     names: dict[int, str],
     rust_root_name: str,
     root_model: int,
-) -> str:
+    root_modules: dict[str, str],
+) -> dict[str, str]:
+    """
+    Render a stub-only package without changing native class identities or import paths.
+
+    Root modules import referenced roots explicitly, so cross-schema reuse remains visible to
+    type checkers. The initializer preserves the native module's public exports. These files
+    describe one native module; their private implementation modules need no runtime loaders.
+    """
     by_parent: dict[int, list[dict[str, Any]]] = {}
     for field in fields:
         by_parent.setdefault(int(field["parent"]), []).append(field)
     models_by_id = {int(model["id"]): model for model in models}
-    header = [
-        "# Copyright (c) 2026 Arista Networks, Inc.\n",
-        "# Generated from the AVD schema. Do not edit by hand.\n",
-        "# These stubs are the Python API documentation; there is no companion Python source.\n",
-        "# ruff: noqa: PYI021\n",
-        "from collections.abc import Iterator, Sequence\n",
-        "from pathlib import Path\n",
-        "from typing import Any, Generic, TypeVar, overload\n\n",
-        "from pyavd._utils.undefined import UndefinedType\n",
-        "from pyavd._rust import OpaqueData\n\n",
-    ]
+    header = (
+        "# Copyright (c) 2026 Arista Networks, Inc.\n"
+        "# Generated from the AVD schema. Do not edit by hand.\n"
+        "# These stubs are the Python API documentation; there is no companion Python source.\n"
+        "# ruff: noqa: PYI021\n"
+    )
     definitions: dict[str, str] = {}
     for model in _python_visible_models(models, by_parent, root_model):
         model_id = int(model["id"])
@@ -885,16 +933,53 @@ def _render_pyi(
         primary_key_type = _python_target_type(primary_key, names)
         definitions[qualified_name] = f"class {name}(_IndexedList[{primary_key_type}, {item_type}]): ..."
     definitions.update(_render_keyed_item_stubs(models, by_parent, names, root_model))
+    return _render_pyi_package(definitions, names[root_model], rust_root_name, root_modules, header)
+
+
+def _render_pyi_package(definitions: dict[str, str], root_name: str, rust_root_name: str, root_modules: dict[str, str], header: str) -> dict[str, str]:
+    """Partition complete nested roots and shared native contracts into independent files."""
+    modules = list(root_modules.values())
+    if len(set(modules)) != len(modules) or any(module in {"_base", "__init__"} for module in modules):
+        msg = "Python root module names must be distinct and cannot be _base or __init__"
+        raise ValueError(msg)
     dynamic_bases = _render_dynamic_pyi_bases() if any(name.endswith("._DynamicKeys") for name in definitions) else ""
-    output = ["".join(header), _render_pyi_bases(), dynamic_bases, "\n\n", _nest_pyi_models(definitions)]
-    root_name = names[root_model]
-    output.extend(
+    output = {
+        "_base.pyi": header
+        + "from collections.abc import Iterator, Sequence\n"
+        + "from typing import Any, Generic, TypeVar, overload\n\n"
+        + "from pyavd._utils.undefined import UndefinedType\n\n"
+        + _render_pyi_bases()
+        + dynamic_bases
+        + "\n"
+    }
+    initializer = [header, "from pathlib import Path\n\n"]
+    for root, module in root_modules.items():
+        root_definitions = {name: declaration for name, declaration in definitions.items() if name.split(".", 1)[0] == root}
+        if not root_definitions:
+            continue
+        body = _nest_pyi_models(root_definitions)
+        used_names = {node.id for node in ast.walk(ast.parse(body)) if isinstance(node, ast.Name)}
+        imports = []
+        if "Any" in used_names:
+            imports.append("from typing import Any\n")
+        if "OpaqueData" in used_names:
+            imports.append("from pyavd._rust import OpaqueData\n")
+        bases = sorted(used_names & {"_Model", "_List", "_IndexedList", "_DynamicCollection"})
+        if bases:
+            imports.append(f"from ._base import {', '.join(bases)}\n")
+        for other_root, other_module in root_modules.items():
+            if other_root != root and other_root in used_names:
+                imports.append(f"from .{other_module} import {other_root}\n")
+        output[f"{module}.pyi"] = header + "".join(imports) + "\n\n" + body + "\n"
+        initializer.append(f"from .{module} import {root} as {root}\n")
+    initializer.extend(
         [
             "\n\n",
             f"def open_{_rust_module_identifier(rust_root_name)}(archive: Path, schema_archive: Path) -> {root_name}: ...\n",
         ]
     )
-    return "".join(output)
+    output["__init__.pyi"] = "".join(initializer)
+    return output
 
 
 __all__ = ["generate_validated_data_models"]
