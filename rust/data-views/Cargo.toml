@@ -1,5 +1,5 @@
 [package]
-name = "validated-data"
+name = "data-views"
 version.workspace = true
 edition = "2024"
 license.workspace = true
@@ -13,7 +13,7 @@ mmap-guard.workspace = true
 rkyv.workspace = true
 self_cell.workspace = true
 serde_json = { workspace = true, features = ["arbitrary_precision", "preserve_order"] }
-validated-data-macros = { path = "../validated-data-macros" }
+data-views-macros = { path = "../data-views-macros" }
 
 [dev-dependencies]
 avdschema = { path = "../avdschema", default-features = false }

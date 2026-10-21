@@ -12,10 +12,10 @@
 
 use std::collections::BTreeMap;
 
+use data_views::{ArchiveModel, FieldDescriptor, ModelDescriptor, ModelKind};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyType};
-use validated_data::{ArchiveModel, FieldDescriptor, ModelDescriptor, ModelKind};
 
 use crate::collections::{CollectionInfo, NativeIndexedList, NativeList};
 use crate::descriptors::{ModelInfo, NativeDict, NativeField, ResolvedTarget};
@@ -291,7 +291,7 @@ pub(crate) fn install_root(
         if model.fields.iter().any(|field| {
             matches!(
                 field.descriptor.relation,
-                validated_data::FieldRelation::DynamicKey(_)
+                data_views::FieldRelation::DynamicKey(_)
             )
         }) {
             let name = format!("{}._DynamicKeys", model.name);
@@ -312,7 +312,7 @@ pub(crate) fn install_root(
             for field in model.fields {
                 if matches!(
                     field.descriptor.relation,
-                    validated_data::FieldRelation::DynamicKey(_)
+                    data_views::FieldRelation::DynamicKey(_)
                 ) {
                     continue;
                 }
@@ -336,7 +336,7 @@ pub(crate) fn install_root(
             if model.fields.iter().any(|field| {
                 matches!(
                     field.descriptor.relation,
-                    validated_data::FieldRelation::DynamicKey(_)
+                    data_views::FieldRelation::DynamicKey(_)
                 )
             }) {
                 let namespace =

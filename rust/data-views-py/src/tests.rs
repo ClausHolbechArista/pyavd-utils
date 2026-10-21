@@ -4,12 +4,10 @@
 
 //! Exercise native descriptors and type ownership against observable Python behavior.
 
+use data_views::{ArchiveModel as _, DataStore, Field, ModelRegistry, RequiredValue, data_view};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use std::sync::Arc;
-use validated_data::{
-    ArchiveModel as _, DataStore, Field, ModelRegistry, RequiredValue, data_view,
-};
 
 use crate::{FieldBinding, ModelBinding, PythonModel as _, Target, install_models, wrap_named};
 
@@ -21,7 +19,7 @@ struct Root<'a, Mode> {
     #[data_view(rename = "schema-name")]
     renamed: Field<&'a str>,
     #[data_view(relaxed)]
-    opaque: Field<Hidden<'a, validated_data::RelaxedValidated>>,
+    opaque: Field<Hidden<'a, data_views::RelaxedValidated>>,
     #[data_view(dynamic = "selectors.names")]
     dynamic: Field<Hidden<'a, Mode>>,
 }
@@ -111,7 +109,7 @@ struct NestedSettings<'a, Mode> {
 )]
 fn nested_classes_preserve_reuse_contextual_items_and_owner_lifetime() -> PyResult<()> {
     let registry = ModelRegistry {
-        root_model: NestedRoot::<'static, validated_data::Validated>::DESCRIPTOR,
+        root_model: NestedRoot::<'static, data_views::Validated>::DESCRIPTOR,
         hash: [11; 32],
     };
     let directory = tempfile::tempdir()?;
@@ -121,7 +119,7 @@ fn nested_classes_preserve_reuse_contextual_items_and_owner_lifetime() -> PyResu
         "standalone": {},
         "shared": {"enabled": false},
     });
-    validated_data::publish(&input, [3; 32], &file, registry)
+    data_views::publish(&input, [3; 32], &file, registry)
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     let store = Arc::new(
         DataStore::from_file(&file, [3; 32], registry)
@@ -196,12 +194,12 @@ assert settings.enabled is True
 
 fn protocol_store(value: &serde_json::Value) -> PyResult<Arc<DataStore>> {
     let registry = ModelRegistry {
-        root_model: ProtocolRoot::<'static, validated_data::Validated>::DESCRIPTOR,
+        root_model: ProtocolRoot::<'static, data_views::Validated>::DESCRIPTOR,
         hash: [9; 32],
     };
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("data.rkyv");
-    validated_data::publish(value, [2; 32], &file, registry)
+    data_views::publish(value, [2; 32], &file, registry)
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     let store = Arc::new(
         DataStore::from_file(&file, [2; 32], registry)
@@ -366,12 +364,12 @@ assert list(reverse) == []
 )]
 fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
     let registry = ModelRegistry {
-        root_model: Root::<'static, validated_data::Validated>::DESCRIPTOR,
+        root_model: Root::<'static, data_views::Validated>::DESCRIPTOR,
         hash: [1; 32],
     };
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("data.rkyv");
-    validated_data::publish(
+    data_views::publish(
         &serde_json::json!({"name":"root", "children":[{"name":"leaf"}], "schema-name":"renamed"}),
         [2; 32],
         &file,
@@ -383,7 +381,7 @@ fn native_descriptors_and_iterators_retain_the_archive() -> PyResult<()> {
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?,
     );
     let root = store
-        .root_as::<Root<'_, validated_data::Validated>>()
+        .root_as::<Root<'_, data_views::Validated>>()
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     assert_eq!(root.name().get(), "root");
     assert!(matches!(root.children(), Field::Value(_)));
@@ -450,9 +448,9 @@ fn cached_child_types_participate_in_python_cycle_collection() -> PyResult<()> {
 }
 
 fn node_binding() -> &'static ModelBinding {
-    const FIELD: validated_data::FieldDescriptor = validated_data::FieldDescriptor {
+    const FIELD: data_views::FieldDescriptor = data_views::FieldDescriptor {
         id: 0,
-        relation: validated_data::FieldRelation::Key("child"),
+        relation: data_views::FieldRelation::Key("child"),
         target_model: None,
         scalar_type: None,
         required: false,
@@ -461,9 +459,9 @@ fn node_binding() -> &'static ModelBinding {
     const NODE: ModelBinding = ModelBinding {
         name: "Node",
         schema_id: None,
-        descriptor: &validated_data::ModelDescriptor {
+        descriptor: &data_views::ModelDescriptor {
             identity: "gc_fixture::Node",
-            kind: validated_data::ModelKind::Dict,
+            kind: data_views::ModelKind::Dict,
             fields: &[FIELD],
             primary_key_fields: &[],
             indexed: false,
@@ -482,7 +480,7 @@ fn node_binding() -> &'static ModelBinding {
 
 #[test]
 fn binding_fields_reference_the_original_rust_descriptors() {
-    let root = Root::<'static, validated_data::Validated>::binding();
+    let root = Root::<'static, data_views::Validated>::binding();
     let renamed_field = root
         .fields
         .iter()
@@ -490,11 +488,11 @@ fn binding_fields_reference_the_original_rust_descriptors() {
         .expect("renamed property");
     assert_eq!(
         renamed_field.descriptor,
-        &Root::<'static, validated_data::Validated>::DESCRIPTOR.fields[3]
+        &Root::<'static, data_views::Validated>::DESCRIPTOR.fields[3]
     );
     assert_eq!(
         renamed_field.descriptor.relation,
-        validated_data::FieldRelation::Key("schema-name")
+        data_views::FieldRelation::Key("schema-name")
     );
     assert!(
         root.fields
@@ -508,13 +506,13 @@ fn binding_fields_reference_the_original_rust_descriptors() {
         .expect("grouped dynamic relationship");
     assert_eq!(
         dynamic.descriptor.relation,
-        validated_data::FieldRelation::DynamicKey("selectors.names")
+        data_views::FieldRelation::DynamicKey("selectors.names")
     );
     assert!(matches!(dynamic.target, Target::Model(target) if target().name == "Hidden"));
     assert_eq!(
-        Children::<'static, validated_data::Validated>::binding()
+        Children::<'static, data_views::Validated>::binding()
             .descriptor
             .primary_key_fields,
-        Children::<'static, validated_data::Validated>::DESCRIPTOR.primary_key_fields
+        Children::<'static, data_views::Validated>::DESCRIPTOR.primary_key_fields
     );
 }

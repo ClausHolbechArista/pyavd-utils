@@ -11,7 +11,7 @@ workspace = true
 avdschema = { path = "../avdschema", default-features = false }
 derive_more = { workspace = true, features = ["display", "from"] }
 log = { workspace = true }
-validated-data = { path = "../validated-data", optional = true }
+data-views = { path = "../data-views", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = [
     "arbitrary_precision", # To support very big numbers
@@ -24,7 +24,7 @@ default = ["gzip", "regex-perf", "yaml"]
 gzip = ["avdschema/gzip"]
 regex-perf = ["avdschema/regex-perf"]
 yaml = ["avdschema/yaml"]
-archive = ["dep:validated-data", "avdschema/mmap"]
+archive = ["dep:data-views", "avdschema/mmap"]
 
 [dev-dependencies]
 ordermap = { workspace = true, features = ["serde"] }

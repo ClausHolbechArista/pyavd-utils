@@ -274,9 +274,7 @@ impl NativeField {
         reason = "The Python descriptor protocol requires an instance receiver."
     )]
     fn __set__(&self, _instance: &Bound<'_, PyAny>, _value: &Bound<'_, PyAny>) -> PyResult<()> {
-        Err(PyAttributeError::new_err(
-            "validated-data fields are immutable",
-        ))
+        Err(PyAttributeError::new_err("data-view fields are immutable"))
     }
 
     #[allow(
@@ -297,7 +295,7 @@ pub(crate) fn wrap_type(class: &Bound<'_, PyType>, value: ValueHandle) -> PyResu
 pub fn wrap_named(
     module: &Bound<'_, PyModule>,
     name: &str,
-    value: validated_data::ValueHandle,
+    value: data_views::ValueHandle,
 ) -> PyResult<Py<PyAny>> {
     wrap_type(
         &crate::catalog::resolve_python_type(module, name)?,
@@ -313,7 +311,7 @@ pub fn wrap_named(
 pub fn wrap_with_schema(
     module: &Bound<'_, PyModule>,
     name: &str,
-    value: validated_data::ValueHandle,
+    value: data_views::ValueHandle,
     schemas: Arc<avdschema::Store>,
 ) -> PyResult<Py<PyAny>> {
     wrap_type(

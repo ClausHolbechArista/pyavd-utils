@@ -10,11 +10,11 @@
 
 use crate::descriptors::{NativeDict, ResolvedTarget, wrap_type};
 use crate::{FieldBinding, ModelBinding, ViewHandle};
+use data_views::FieldRelation;
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyTuple, PyType};
 use pyo3::{PyTraverseError, PyVisit};
-use validated_data::FieldRelation;
 
 fn concrete_keys(parent: &ViewHandle, field: &FieldBinding) -> Vec<String> {
     let mut keys = parent.dynamic_names(field);

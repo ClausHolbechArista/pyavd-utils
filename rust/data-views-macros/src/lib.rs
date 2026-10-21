@@ -2,13 +2,13 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Attribute declarations for borrowed, mode-parameterized validated-data views.
+//! Attribute declarations for borrowed, mode-parameterized data views.
 //!
 //! Declared fields describe accessor return types; they are replaced with a single checked
 //! backing token. Field order assigns local slots. Indexed lists name their primary-key fields
 //! and resolve slots through the item declaration, without copying numeric identifiers.
 //! Opt-in Python metadata refers back to these same descriptors. The macro emits metadata only;
-//! shared native implementations in `validated-data-py` own Python objects and perform access.
+//! shared native implementations in `data-views-py` own Python objects and perform access.
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -38,7 +38,7 @@ mod tests;
 /// `#[data_view(relaxed)]` marks a relationship whose descendants use relaxed validation.
 ///
 /// Declarations use the lifetime `'a` and mode parameter `Mode`. Child collection types normally
-/// carry `Mode`; a relaxed relationship instead carries `validated_data::RelaxedValidated`.
+/// carry `Mode`; a relaxed relationship instead carries `data_views::RelaxedValidated`.
 /// List tuple fields also use `Field<T>` or `RequiredValue<T, Mode>` to describe item nullability,
 /// independently of the containing list's requiredness. Unit list declarations expose raw items.
 /// List `primary_key(...)` names the item's Rust accessors (after any schema-key rename).
@@ -50,7 +50,7 @@ mod tests;
 /// `python(name = "...")` opts a model into native Python registration. Dotted names place the
 /// class inside its public hierarchy, such as `AVDDesign.DevicesItemBase`. Keyed lists additionally
 /// declare `item_name = "..."` for their contextual item identity. The declaration emits a
-/// `validated_data_py::PythonModel` implementation whose fields reference the original Rust
+/// `data_views_py::PythonModel` implementation whose fields reference the original Rust
 /// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields use
 /// `python_name = "..."` for a typed group under `_dynamic_keys`, not a static property.
 /// `schema = Str(0)` on a field and `python(..., schema = Dict(0))` on a model identify nodes
@@ -93,7 +93,7 @@ fn schema_identity(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Tokens>
     syn::parenthesized!(content in input);
     let index: syn::LitInt = content.parse()?;
     let _: u32 = index.base10_parse()?;
-    Ok(quote!(Some(::validated_data_py::SchemaId::#kind(#index))))
+    Ok(quote!(Some(::data_views_py::SchemaId::#kind(#index))))
 }
 
 fn options(arguments: Tokens) -> syn::Result<Options> {
@@ -183,13 +183,13 @@ fn inner_type(ty: &Type) -> syn::Result<(&Type, bool)> {
 fn scalar(ty: &Type) -> Option<Tokens> {
     match ty {
         Type::Path(path) if path.path.is_ident("bool") => {
-            Some(quote!(::validated_data::ScalarType::Bool))
+            Some(quote!(::data_views::ScalarType::Bool))
         }
         Type::Path(path) if path.path.is_ident("i64") => {
-            Some(quote!(::validated_data::ScalarType::Int))
+            Some(quote!(::data_views::ScalarType::Int))
         }
         Type::Reference(reference) if matches!(&*reference.elem, Type::Path(path) if path.path.is_ident("str")) => {
-            Some(quote!(::validated_data::ScalarType::Str))
+            Some(quote!(::data_views::ScalarType::Str))
         }
         _ => None,
     }
@@ -208,11 +208,11 @@ struct Expansion {
 
 fn python_target(target: &Type, relaxed: bool) -> Tokens {
     if scalar(target).is_some() {
-        quote!(::validated_data_py::Target::Scalar)
+        quote!(::data_views_py::Target::Scalar)
     } else if relaxed {
-        quote!(::validated_data_py::Target::Opaque)
+        quote!(::data_views_py::Target::Opaque)
     } else {
-        quote!(::validated_data_py::Target::Model(<#target as ::validated_data_py::PythonModel>::binding))
+        quote!(::data_views_py::Target::Model(<#target as ::data_views_py::PythonModel>::binding))
     }
 }
 
@@ -250,10 +250,10 @@ fn add_keyed_list_accessors(
         let hash = name_hash(&key.to_string());
         expansion
             .primary_slots
-            .push(quote!(<#item_type as ::validated_data::KeyField<'a, #hash>>::SLOT));
+            .push(quote!(<#item_type as ::data_views::KeyField<'a, #hash>>::SLOT));
         key_methods.push(quote! {
             /// Guaranteed primary-key component of this list item, regardless of uniqueness.
-            pub fn #key(&self) -> ::validated_data::Guaranteed<<#item_type as ::validated_data::KeyField<'a, #hash>>::Value> {
+            pub fn #key(&self) -> ::data_views::Guaranteed<<#item_type as ::data_views::KeyField<'a, #hash>>::Value> {
                 self.0.key::<#hash>()
             }
         });
@@ -261,13 +261,13 @@ fn add_keyed_list_accessors(
     expansion.extra_types = quote! {
         /// Item reached through this list, with guaranteed primary-key accessors.
         #[derive(Clone, Copy, Debug)]
-        #visibility struct #item_name<'a, __DataViewMode: ::validated_data::ValidationMode = ::validated_data::Validated>(
-            ::validated_data::KeyedItem<#item_type>, ::core::marker::PhantomData<__DataViewMode>
+        #visibility struct #item_name<'a, __DataViewMode: ::data_views::ValidationMode = ::data_views::Validated>(
+            ::data_views::KeyedItem<#item_type>, ::core::marker::PhantomData<__DataViewMode>
         );
-        impl<'a, __DataViewMode: ::validated_data::ValidationMode> #item_name<'a, __DataViewMode> {
+        impl<'a, __DataViewMode: ::data_views::ValidationMode> #item_name<'a, __DataViewMode> {
             #(#key_methods)*
         }
-        impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::core::ops::Deref for #item_name<'a, __DataViewMode> {
+        impl<'a, __DataViewMode: ::data_views::ValidationMode> ::core::ops::Deref for #item_name<'a, __DataViewMode> {
             type Target = #item_type;
             fn deref(&self) -> &Self::Target { &self.0 }
         }
@@ -276,16 +276,16 @@ fn add_keyed_list_accessors(
         /// Read an item by its position, retaining its primary-key guarantee.
         pub fn get(self, index: usize) -> Option<#item_name<'a, __DataViewMode>> {
             self.0.item::<#item_type>(index).map(|field| {
-                let value = <::validated_data::Validated as ::validated_data::ValidationMode>::required(field).get();
-                #item_name(::validated_data::KeyedItem::new(value), ::core::marker::PhantomData)
+                let value = <::data_views::Validated as ::data_views::ValidationMode>::required(field).get();
+                #item_name(::data_views::KeyedItem::new(value), ::core::marker::PhantomData)
             })
         }
     });
     if options.indexed {
         expansion.methods.push(quote! {
             /// Look up the ordered primary-key components.
-            pub fn get_by_primary_key(self, key: &[::validated_data::PrimaryKeyValue<'_>]) -> Option<#item_name<'a, __DataViewMode>> {
-                self.0.indexed_item::<#item_type>(key).map(|value| #item_name(::validated_data::KeyedItem::new(value), ::core::marker::PhantomData))
+            pub fn get_by_primary_key(self, key: &[::data_views::PrimaryKeyValue<'_>]) -> Option<#item_name<'a, __DataViewMode>> {
+                self.0.indexed_item::<#item_type>(key).map(|value| #item_name(::data_views::KeyedItem::new(value), ::core::marker::PhantomData))
             }
         });
     }
@@ -344,10 +344,10 @@ fn expand_list(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
         let target_model = if item_scalar.is_some() {
             quote!(None)
         } else {
-            quote!(Some(&<#item_type as ::validated_data::ArchiveModel>::DESCRIPTOR))
+            quote!(Some(&<#item_type as ::data_views::ArchiveModel>::DESCRIPTOR))
         };
-        expansion.descriptors.push(quote!(::validated_data::FieldDescriptor {
-            id: 0, relation: ::validated_data::FieldRelation::Item,
+        expansion.descriptors.push(quote!(::data_views::FieldDescriptor {
+            id: 0, relation: ::data_views::FieldRelation::Item,
             target_model: #target_model, scalar_type: #scalar_type, required: #required, relaxed: #relaxed,
         }));
         if options.primary_keys.is_empty() {
@@ -387,7 +387,7 @@ fn expand_list(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
         }
         expansion.methods.push(quote! {
             /// Read an item from a schema without an item declaration.
-            pub fn get(self, index: usize) -> Option<::validated_data::ValueView<'a>> { self.0.raw_item(index) }
+            pub fn get(self, index: usize) -> Option<::data_views::ValueView<'a>> { self.0.raw_item(index) }
         });
     }
     Ok(expansion)
@@ -451,16 +451,16 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
         let target_model = if target_scalar.is_some() {
             quote!(None)
         } else {
-            quote!(Some(&<#target as ::validated_data::ArchiveModel>::DESCRIPTOR))
+            quote!(Some(&<#target as ::data_views::ArchiveModel>::DESCRIPTOR))
         };
         let relation = if dynamic {
-            quote!(::validated_data::FieldRelation::DynamicKey(#key))
+            quote!(::data_views::FieldRelation::DynamicKey(#key))
         } else {
-            quote!(::validated_data::FieldRelation::Key(#key))
+            quote!(::data_views::FieldRelation::Key(#key))
         };
         expansion
             .descriptors
-            .push(quote!(::validated_data::FieldDescriptor {
+            .push(quote!(::data_views::FieldDescriptor {
                 id: #slot, relation: #relation, target_model: #target_model,
                 scalar_type: #scalar_type, required: #required, relaxed: #relaxed,
             }));
@@ -468,9 +468,9 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
             let property_name = python_name
                 .unwrap_or_else(|| LitStr::new(&identifier.to_string(), identifier.span()));
             let conversion = python_target(target, relaxed);
-            expansion.python_fields.push(quote!(::validated_data_py::FieldBinding {
+            expansion.python_fields.push(quote!(::data_views_py::FieldBinding {
                 name: #property_name,
-                descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR.fields[#field_index],
+                descriptor: &<Self as ::data_views::ArchiveModel>::DESCRIPTOR.fields[#field_index],
                 target: #conversion,
                 schema_id: #schema,
             }));
@@ -496,10 +496,10 @@ fn expand_dict(options: &Options, item: &ItemStruct) -> syn::Result<Expansion> {
         if target_scalar.is_some() {
             let hash = name_hash(&identifier.to_string());
             expansion.field_traits.push(quote! {
-                impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data::KeyField<'a, #hash> for #name<'a, __DataViewMode> {
+                impl<'a, __DataViewMode: ::data_views::ValidationMode> ::data_views::KeyField<'a, #hash> for #name<'a, __DataViewMode> {
                     type Value = #target;
                     const SLOT: u32 = #slot;
-                    fn key_field(&self) -> ::validated_data::Field<Self::Value> { #access }
+                    fn key_field(&self) -> ::data_views::Field<Self::Value> { #access }
                 }
             });
         }
@@ -522,9 +522,9 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
         expand_dict(&options, &item)?
     };
     let model_kind = if options.list {
-        quote!(::validated_data::ModelKind::List)
+        quote!(::data_views::ModelKind::List)
     } else {
-        quote!(::validated_data::ModelKind::Dict)
+        quote!(::data_views::ModelKind::Dict)
     };
     let methods = &expansion.methods;
     let descriptors = &expansion.descriptors;
@@ -545,11 +545,11 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
             .as_ref()
             .map_or_else(|| quote!(None), |target| quote!(Some(#target)));
         quote! {
-            impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data_py::PythonModel for #name<'a, __DataViewMode> {
-                const BINDING: ::validated_data_py::ModelBinding = ::validated_data_py::ModelBinding {
+            impl<'a, __DataViewMode: ::data_views::ValidationMode> ::data_views_py::PythonModel for #name<'a, __DataViewMode> {
+                const BINDING: ::data_views_py::ModelBinding = ::data_views_py::ModelBinding {
                     name: #python_name,
                     schema_id: #schema,
-                    descriptor: &<Self as ::validated_data::ArchiveModel>::DESCRIPTOR,
+                    descriptor: &<Self as ::data_views::ArchiveModel>::DESCRIPTOR,
                     fields: &[#(#fields),*],
                     item: #item_expression,
                     keyed_item_name: #item_name,
@@ -562,18 +562,18 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
     Ok(quote! {
         #(#attributes)*
         #[derive(Clone, Copy, Debug)]
-        #visibility struct #name<'a, __DataViewMode: ::validated_data::ValidationMode = ::validated_data::Validated>(::validated_data::CheckedModel<'a, Self>, ::core::marker::PhantomData<__DataViewMode>);
-        impl<'a, __DataViewMode: ::validated_data::ValidationMode> #name<'a, __DataViewMode> { #(#methods)* }
-        impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data::ArchiveModel for #name<'a, __DataViewMode> {
-            const DESCRIPTOR: ::validated_data::ModelDescriptor = ::validated_data::ModelDescriptor {
+        #visibility struct #name<'a, __DataViewMode: ::data_views::ValidationMode = ::data_views::Validated>(::data_views::CheckedModel<'a, Self>, ::core::marker::PhantomData<__DataViewMode>);
+        impl<'a, __DataViewMode: ::data_views::ValidationMode> #name<'a, __DataViewMode> { #(#methods)* }
+        impl<'a, __DataViewMode: ::data_views::ValidationMode> ::data_views::ArchiveModel for #name<'a, __DataViewMode> {
+            const DESCRIPTOR: ::data_views::ModelDescriptor = ::data_views::ModelDescriptor {
                 identity: concat!(module_path!(), "::", stringify!(#name)),
                 kind: #model_kind,
                 fields: &[#(#descriptors),*], primary_key_fields: &[#(#primary_slots),*], indexed: #indexed,
             };
         }
-        impl<'a, __DataViewMode: ::validated_data::ValidationMode> ::validated_data::DataView<'a> for #name<'a, __DataViewMode> {
+        impl<'a, __DataViewMode: ::data_views::ValidationMode> ::data_views::DataView<'a> for #name<'a, __DataViewMode> {
             type Mode = __DataViewMode;
-            fn from_checked(value: ::validated_data::CheckedModel<'a, Self>) -> Self { Self(value, ::core::marker::PhantomData) }
+            fn from_checked(value: ::data_views::CheckedModel<'a, Self>) -> Self { Self(value, ::core::marker::PhantomData) }
         }
         #(#field_traits)*
         #extra_types

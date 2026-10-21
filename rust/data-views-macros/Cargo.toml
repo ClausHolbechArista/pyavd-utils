@@ -1,5 +1,5 @@
 [package]
-name = "validated-data-macros"
+name = "data-views-macros"
 version.workspace = true
 edition = "2024"
 license.workspace = true

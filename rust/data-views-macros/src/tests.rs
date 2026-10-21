@@ -83,7 +83,7 @@ fn python_metadata_is_opt_in_and_reuses_field_descriptors() {
     let plain = expand(quote!(), &dictionary)
         .expect("Rust-only view")
         .to_string();
-    assert!(!plain.contains("validated_data_py"));
+    assert!(!plain.contains("data_views_py"));
     let bound = expand(quote!(python(name = "Item")), &dictionary)
         .expect("Python-exposed view")
         .to_string();

@@ -2,7 +2,7 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Immutable validated data, checked archive ownership, and generated typed views.
+//! Immutable data storage, checked archive ownership, and generated typed views.
 //!
 //! Publication stores one coerced document in flat value and relationship tables. Views borrow
 //! those tables without materializing collections. Every generated model shares a descriptor
@@ -16,7 +16,7 @@
 //! but do not publish a key lookup table or claim unique-key lookup semantics.
 //!
 //! ```
-//! use validated_data::{data_view, Field, RequiredValue, Validated, RelaxedValidated};
+//! use data_views::{data_view, Field, RequiredValue, Validated, RelaxedValidated};
 //!
 //! #[data_view]
 //! pub struct Device<'a, Mode> {
@@ -45,7 +45,7 @@
 //! [`Field::Unset`] from [`Field::Null`]. A schema default does not erase either state: these views
 //! expose the published data and do not insert defaults on access.
 
-extern crate self as validated_data;
+extern crate self as data_views;
 
 mod modes;
 mod store;
@@ -54,7 +54,7 @@ mod views;
 pub use self::modes::*;
 pub use self::store::*;
 pub use self::views::*;
-pub use validated_data_macros::data_view;
+pub use data_views_macros::data_view;
 
 #[cfg(test)]
 mod tests;

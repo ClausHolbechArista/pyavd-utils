@@ -12,8 +12,8 @@ use crate::{FieldBinding, ModelBinding, Target};
 use avdschema::{
     SchemaDataMapping, SchemaDataSequence, SchemaDataValue, SchemaId, SchemaValueView, Store,
 };
+use data_views::{FieldRelation, ModelKind, PrimaryKeyValue, ValueHandle};
 use std::sync::Arc;
-use validated_data::{FieldRelation, ModelKind, PrimaryKeyValue, ValueHandle};
 
 #[derive(Clone, Debug)]
 enum Step {
@@ -419,7 +419,7 @@ impl ViewHandle {
 /// They intentionally expose raw data, so supplied empty/null selectors suppress defaults.
 #[derive(Clone, Copy)]
 enum InputValue<'a> {
-    Data(validated_data::ValueView<'a>),
+    Data(data_views::ValueView<'a>),
     Schema(SchemaValueView<'a>),
     Empty,
 }
@@ -474,7 +474,7 @@ impl<'a> SchemaDataMapping<'a> for InputMapping<'a> {
                 value
                     .as_dict()
                     .into_iter()
-                    .flat_map(validated_data::DictView::entries)
+                    .flat_map(data_views::DictView::entries)
                     .map(|(key, _)| std::borrow::Cow::Borrowed(key)),
             ),
             InputValue::Schema(SchemaValueView::Object(values)) => Box::new(

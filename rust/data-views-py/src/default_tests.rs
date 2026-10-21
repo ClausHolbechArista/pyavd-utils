@@ -5,10 +5,10 @@
 //! Observable default/presence semantics and grouped dynamic access over one small schema.
 
 use crate::{install_models, wrap_with_schema};
+use data_views::{ArchiveModel as _, DataStore, Field, ModelRegistry, data_view};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use std::sync::Arc;
-use validated_data::{ArchiveModel as _, DataStore, Field, ModelRegistry, data_view};
 
 // These IDs describe the paired source below, just as generated declarations describe the
 // compiled schema they ship with. The test exercises metadata-driven access, not test hooks.
@@ -87,12 +87,12 @@ fn schema() -> PyResult<Arc<avdschema::Store>> {
 
 fn data(value: &serde_json::Value, schemas: &avdschema::Store) -> PyResult<Arc<DataStore>> {
     let registry = ModelRegistry {
-        root_model: Fixture::<'static, validated_data::Validated>::DESCRIPTOR,
+        root_model: Fixture::<'static, data_views::Validated>::DESCRIPTOR,
         hash: [31; 32],
     };
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("host.rkyv");
-    validated_data::publish(value, schemas.archive_hash(), &path, registry)
+    data_views::publish(value, schemas.archive_hash(), &path, registry)
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     let store = Arc::new(
         DataStore::from_file(&path, schemas.archive_hash(), registry)

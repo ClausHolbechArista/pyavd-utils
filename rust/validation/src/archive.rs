@@ -4,7 +4,7 @@
 
 //! Validate and coerce a document before publishing immutable validated data.
 //!
-//! Archive storage and views belong to the validated-data crate. This module owns the validation
+//! Archive storage and views belong to the data-views crate. This module owns the validation
 //! policy and prevents publication when parsing or schema validation reports an error.
 
 use crate::Configuration;
@@ -13,8 +13,8 @@ use crate::StoreValidateInput as _;
 use crate::ValidationResult;
 use crate::feedback::InputDiagnostic;
 use avdschema::Store;
+use data_views::ModelRegistry;
 use std::path::Path;
-use validated_data::ModelRegistry;
 
 /// Failure during validation or archive publication.
 #[derive(Debug, derive_more::Display, derive_more::From)]
@@ -24,7 +24,7 @@ pub enum PublicationError {
     Validation(StoreValidateError),
     /// Archive construction or publication failed.
     #[display("{_0}")]
-    Archive(validated_data::ArchiveError),
+    Archive(data_views::ArchiveError),
 }
 
 /// Result of validation and conditional archive publication.
@@ -70,11 +70,11 @@ pub fn validate_json_to_archive(
         return Ok(publication);
     }
     let value = output.document.coerced.ok_or_else(|| {
-        validated_data::ArchiveError::Build(
+        data_views::ArchiveError::Build(
             "successful validation did not return coerced data".to_owned(),
         )
     })?;
-    validated_data::publish(&value, schemas.archive_hash(), destination, registry)?;
+    data_views::publish(&value, schemas.archive_hash(), destination, registry)?;
     publication.published = true;
     Ok(publication)
 }
@@ -85,8 +85,8 @@ mod tests {
     use avdschema::StoreSource;
 
     use super::*;
+    use data_views::*;
     use std::sync::Arc;
-    use validated_data::*;
 
     const ITEM_FIELDS: &[FieldDescriptor] = &[
         FieldDescriptor {

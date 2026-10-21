@@ -497,6 +497,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-views"
+version = "0.0.12"
+dependencies = [
+ "avdschema",
+ "data-views-macros",
+ "derive_more",
+ "mmap-guard",
+ "rkyv",
+ "self_cell",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "data-views-macros"
+version = "0.0.12"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "data-views-py"
+version = "0.0.12"
+dependencies = [
+ "avdschema",
+ "data-views",
+ "pyo3",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2410,51 +2444,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "validated-data"
-version = "0.0.12"
-dependencies = [
- "avdschema",
- "derive_more",
- "mmap-guard",
- "rkyv",
- "self_cell",
- "serde_json",
- "tempfile",
- "validated-data-macros",
-]
-
-[[package]]
-name = "validated-data-macros"
-version = "0.0.12"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "validated-data-py"
-version = "0.0.12"
-dependencies = [
- "avdschema",
- "pyo3",
- "serde_json",
- "tempfile",
- "validated-data",
-]
-
-[[package]]
 name = "validation"
 version = "0.0.12"
 dependencies = [
  "avdschema",
+ "data-views",
  "derive_more",
  "log",
  "ordermap",
  "serde",
  "serde_json",
  "tempfile",
- "validated-data",
  "yaml-parser",
 ]
 

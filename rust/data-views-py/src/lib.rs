@@ -2,7 +2,7 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Native Python access to immutable validated-data archives.
+//! Native Python access to immutable data through generated view descriptors.
 //!
 //! Data-view attributes derive Python names and exposed fields alongside Rust model descriptors.
 //! Root-driven registration creates distinct Python types, while native descriptors and collection operations
@@ -39,7 +39,7 @@ mod descriptors;
 mod dynamic;
 mod values;
 
-extern crate self as validated_data_py;
+extern crate self as data_views_py;
 
 pub use avdschema::SchemaId;
 pub use catalog::{FieldBinding, ModelBinding, PythonModel, Target, install_models};

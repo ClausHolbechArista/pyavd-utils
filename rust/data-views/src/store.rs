@@ -2,7 +2,7 @@
 // Use of this source code is governed by the Apache License 2.0
 // that can be found in the LICENSE file.
 
-//! Validated single-host data archives.
+//! Immutable single-host data archives and memory-mapped ownership.
 //!
 //! Validation and coercion happen before publication. Successful data is flattened into value and
 //! relationship tables, written atomically, and later memory-mapped. Generated code supplies the
@@ -31,7 +31,7 @@ use serde_json::Value;
 const MAGIC: &[u8; 8] = b"AVDDATA\0";
 const FORMAT_VERSION: u32 = 3;
 const HEADER_LENGTH: usize = 16;
-/// Validation semantics used by typed validated-data archives.
+/// Validation semantics required by typed data views.
 ///
 /// Policy 2 enforces non-null required fields outside relaxed subtrees. Publication receives
 /// structurally validated, coerced data; generated model modes describe descendant requiredness.
@@ -219,7 +219,7 @@ struct PrimaryKeySlot {
 
 #[derive(Archive, Serialize, Deserialize, Clone, Debug)]
 #[rkyv(derive(Debug))]
-struct ValidatedArchive {
+struct DataArchive {
     schema_hash: [u8; 32],
     registry_hash: [u8; 32],
     policy_id: u32,
@@ -257,14 +257,10 @@ impl Builder {
         }
     }
 
-    fn build(
-        mut self,
-        value: &Value,
-        schema_hash: [u8; 32],
-    ) -> Result<ValidatedArchive, ArchiveError> {
+    fn build(mut self, value: &Value, schema_hash: [u8; 32]) -> Result<DataArchive, ArchiveError> {
         let root_model = self.registry.root_model;
         let root = self.push_value(value, Some(&root_model))?;
-        Ok(ValidatedArchive {
+        Ok(DataArchive {
             schema_hash,
             registry_hash: self.registry.hash,
             policy_id: VALIDATION_POLICY_ID,
@@ -452,7 +448,7 @@ fn to_u32(value: usize, subject: &str) -> Result<u32, ArchiveError> {
         .map_err(|error| ArchiveError::Build(format!("{subject} count exceeds u32: {error}")))
 }
 
-struct ArchiveRoot<'a>(&'a ArchivedValidatedArchive);
+struct ArchiveRoot<'a>(&'a ArchivedDataArchive);
 self_cell! {
     struct ArchiveCell {
         owner: FileData,
@@ -461,7 +457,7 @@ self_cell! {
     }
 }
 
-/// Immutable memory-mapped validated data.
+/// Immutable memory-mapped data with a generated model registry.
 pub struct DataStore {
     archive: ArchiveCell,
     registry: ModelRegistry,
@@ -488,7 +484,7 @@ impl DataStore {
         let data = mmap_guard::map_file(path)?;
         let archive = ArchiveCell::try_new(data, |bytes| {
             validate_header(bytes.as_ref())?;
-            let root = rkyv::access::<ArchivedValidatedArchive, RkyvError>(bytes.as_ref())
+            let root = rkyv::access::<ArchivedDataArchive, RkyvError>(bytes.as_ref())
                 .map_err(|error| ArchiveError::Invalid(error.to_string()))?;
             if root.schema_hash != schema_hash {
                 return Err(ArchiveError::Compatibility(
@@ -529,7 +525,7 @@ impl DataStore {
         self.registry.root_model.identity
     }
 
-    fn archived(&self) -> &ArchivedValidatedArchive {
+    fn archived(&self) -> &ArchivedDataArchive {
         self.archive.borrow_dependent().0
     }
 
@@ -1151,7 +1147,7 @@ impl ListHandle {
 fn validate_header(bytes: &[u8]) -> Result<(), ArchiveError> {
     if bytes.get(..MAGIC.len()) != Some(MAGIC) {
         return Err(ArchiveError::Invalid(
-            "missing validated-data magic".to_owned(),
+            "missing data archive magic".to_owned(),
         ));
     }
     let version = bytes
@@ -1177,7 +1173,7 @@ fn validate_header(bytes: &[u8]) -> Result<(), ArchiveError> {
     Ok(())
 }
 
-fn validate_integrity(root: &ArchivedValidatedArchive) -> Result<(), ArchiveError> {
+fn validate_integrity(root: &ArchivedDataArchive) -> Result<(), ArchiveError> {
     let values = root.values.len();
     if usize::try_from(root.root.0.to_native()).map_or(true, |id| id >= values) {
         return Err(ArchiveError::Invalid(
@@ -1316,17 +1312,17 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
     clippy::module_name_repetitions,
     reason = "The qualified public error name is explicit at call sites"
 )]
-/// Failure to validate, build, publish, or open a validated-data archive.
+/// Failure to validate, build, publish, or open a data archive.
 #[derive(Debug, derive_more::Display)]
 pub enum ArchiveError {
     /// Archive construction or serialization failed.
-    #[display("Could not build validated-data archive: {_0}")]
+    #[display("Could not build data archive: {_0}")]
     Build(String),
     /// Archive bytes or identifiers are invalid.
-    #[display("Invalid validated-data archive: {_0}")]
+    #[display("Invalid data archive: {_0}")]
     Invalid(String),
     /// Archive does not match the required schema, registry, or policy.
-    #[display("Incompatible validated-data archive: {_0}")]
+    #[display("Incompatible data archive: {_0}")]
     Compatibility(String),
     /// Filesystem operation failed.
     #[display("Archive I/O failed: {_0}")]
@@ -1426,7 +1422,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let destination = directory.path().join("invalid.rkyv");
         let schemas = schemas();
-        let archive = ValidatedArchive {
+        let archive = DataArchive {
             schema_hash: schemas.archive_hash(),
             registry_hash: REGISTRY.hash,
             policy_id: VALIDATION_POLICY_ID,

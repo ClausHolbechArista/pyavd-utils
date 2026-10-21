@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from pyavd_utils_gen.validated_data_generation import generate_validated_data_models
+from pyavd_utils_gen.data_view_generation import generate_data_views
 
 ARTIFACTS = Path(__file__).parent / "artifacts"
 
@@ -56,7 +56,7 @@ def _stub_classes(package: Path) -> dict[str, ast.ClassDef]:
 def test_collection_api_signatures_are_declared_once(tmp_path: Path) -> None:
     """Keep native utility signatures and documentation in shared bases, not every model."""
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(ARTIFACTS / "schemas.json", "schema_generation_fixture", rust, pyi, "SchemaGenerationFixture", "SchemaGenerationFixture")
+    generate_data_views(ARTIFACTS / "schemas.json", "schema_generation_fixture", rust, pyi, "SchemaGenerationFixture", "SchemaGenerationFixture")
     classes = [node for node in ast.parse(_combined_stub_source(pyi)).body if isinstance(node, ast.ClassDef)]
     methods = [node.name for model in classes for node in model.body if isinstance(node, ast.FunctionDef)]
     for name in ["__bool__", "__len__", "__iter__", "__reversed__", "count", "index", "keys", "values", "items"]:
@@ -91,7 +91,7 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
         encoding="UTF-8",
     )
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture")
     classes = _stub_classes(pyi)
     positional = classes["Fixture.Values"]
     keyed = classes["Fixture.Entries"]
@@ -116,12 +116,12 @@ def test_collection_stubs_distinguish_positional_and_primary_key_access(tmp_path
     assert {"__bool__", "__eq__", "_is_defined", "_is_default"} == model_methods
 
 
-def test_generate_validated_data_models(tmp_path: Path) -> None:
+def test_generate_data_views(tmp_path: Path) -> None:
     """Generate nominal Rust views and Python declarations from the shared fixture."""
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(
+    generate_data_views(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         rust,
@@ -135,14 +135,14 @@ def test_generate_validated_data_models(tmp_path: Path) -> None:
     pyi_source = _combined_stub_source(pyi)
     assert (rust.with_suffix("") / "schema_generation_fixture.rs").is_file()
     assert (rust.with_suffix("") / "schema_generation_fixture" / "interface_profiles.rs").is_file()
-    assert "pub const REGISTRY: ::validated_data::ModelRegistry" in rust_source
+    assert "pub const REGISTRY: ::data_views::ModelRegistry" in rust_source
     assert "pub mod schema_generation_fixture;" in rust_source
     assert "data_view(indexed_list, primary_key(name), python(" in rust_source
     assert "#[derive(Clone, Copy, Debug)]" not in rust_source
     assert "pub struct InterfaceProfiles<'a, Mode>" in rust_source
     assert "pub mod interface_profiles;" in rust_source
     assert "pub struct Item<'a, Mode>" in rust_source
-    assert "pub interface_profiles: ::validated_data::Field<" in rust_source
+    assert "pub interface_profiles: ::data_views::Field<" in rust_source
     assert "primary_key(name)" in rust_source
     assert re.search(r'python\(name = "SchemaGenerationFixture", schema = Dict\(\d+\)\)', rust_source)
     assert re.search(
@@ -186,13 +186,13 @@ def test_root_level_collection_has_parent_reexport_and_keeps_item_namespace(tmp_
     )
     rust = tmp_path / "avd_design.rs"
     stubs = tmp_path / "avd_design_stubs"
-    generate_validated_data_models(source, "fixture", rust, stubs, "AvdDesign", "AVDDesign")
+    generate_data_views(source, "fixture", rust, stubs, "AvdDesign", "AVDDesign")
 
     root_module = (rust.with_suffix("") / "avd_design.rs").read_text(encoding="UTF-8")
     devices_module = (rust.with_suffix("") / "avd_design" / "devices.rs").read_text(encoding="UTF-8")
     assert "pub mod devices;" in root_module
     assert "pub use devices::Devices;" in root_module
-    assert "pub devices: ::validated_data::Field<Devices<'a, Mode>>," in root_module
+    assert "pub devices: ::data_views::Field<Devices<'a, Mode>>," in root_module
     assert "pub struct Devices<'a, Mode>" in devices_module
     assert "pub struct Item<'a, Mode>" in devices_module
     assert "pub mod item {" in devices_module
@@ -200,7 +200,7 @@ def test_root_level_collection_has_parent_reexport_and_keeps_item_namespace(tmp_
     assert "pub use devices::Item;" not in root_module
 
 
-def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path) -> None:
+def test_generate_data_views_projects_static_root_keys(tmp_path: Path) -> None:
     """Keep selected branches complete and preserve their registry identities."""
     full_rust = tmp_path / "full.rs"
     full_pyi = tmp_path / "full_stubs"
@@ -209,7 +209,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     reordered_rust = tmp_path / "reordered.rs"
     reordered_pyi = tmp_path / "reordered_stubs"
 
-    generate_validated_data_models(
+    generate_data_views(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         full_rust,
@@ -217,7 +217,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         "SchemaGenerationFixture",
         "SchemaGenerationFixture",
     )
-    generate_validated_data_models(
+    generate_data_views(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         projected_rust,
@@ -226,7 +226,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
         "SchemaGenerationFixture",
         root_keys=["accounting", "interface_profiles"],
     )
-    generate_validated_data_models(
+    generate_data_views(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         reordered_rust,
@@ -239,9 +239,9 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     full_source = _combined_rust_source(full_rust)
     projected_source = _combined_rust_source(projected_rust)
     projected_pyi_source = _combined_stub_source(projected_pyi)
-    assert "pub accounting: ::validated_data::Field<" in projected_source
-    assert "pub methods: ::validated_data::Field<" in projected_source
-    assert "pub authentication: ::validated_data::Field<" not in projected_source
+    assert "pub accounting: ::data_views::Field<" in projected_source
+    assert "pub methods: ::data_views::Field<" in projected_source
+    assert "pub authentication: ::data_views::Field<" not in projected_source
     assert "def accounting(" in projected_pyi_source
     assert "def authentication(" not in projected_pyi_source
     assert projected_source != full_source
@@ -249,8 +249,8 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     assert not (projected_rust.with_suffix("") / "native.rs").exists()
     assert _stub_sources(projected_pyi) == _stub_sources(reordered_pyi)
 
-    full_accounting = next(line for line in full_source.splitlines() if "pub accounting: ::validated_data::Field<" in line)
-    projected_accounting = next(line for line in projected_source.splitlines() if "pub accounting: ::validated_data::Field<" in line)
+    full_accounting = next(line for line in full_source.splitlines() if "pub accounting: ::data_views::Field<" in line)
+    projected_accounting = next(line for line in projected_source.splitlines() if "pub accounting: ::data_views::Field<" in line)
     assert projected_accounting == full_accounting
     full_hash = next(line for line in full_source.splitlines() if line.startswith("const REGISTRY_HASH"))
     projected_hash = next(line for line in projected_source.splitlines() if line.startswith("const REGISTRY_HASH"))
@@ -258,7 +258,7 @@ def test_generate_validated_data_models_projects_static_root_keys(tmp_path: Path
     ast.parse(projected_pyi_source)
 
 
-def test_generate_validated_data_models_reuses_pure_cross_schema_references(tmp_path: Path) -> None:
+def test_generate_data_views_reuses_pure_cross_schema_references(tmp_path: Path) -> None:
     """Generate a referenced schema once and point pure cross-schema fields at its views."""
     source = tmp_path / "schemas.json"
     source.write_text(
@@ -273,7 +273,7 @@ def test_generate_validated_data_models_reuses_pure_cross_schema_references(tmp_
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(
+    generate_data_views(
         source,
         "root",
         rust,
@@ -299,10 +299,10 @@ def test_generate_validated_data_models_reuses_pure_cross_schema_references(tmp_
     assert "def open_root(archive: Path, schema_archive: Path) -> Root:" in (pyi / "__init__.pyi").read_text(encoding="UTF-8")
 
 
-def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path) -> None:
+def test_generate_data_views_rejects_unknown_root_key(tmp_path: Path) -> None:
     """Reject a misspelled projection instead of silently generating an empty branch."""
     with pytest.raises(ValueError, match=r"unknown static root key.*missing"):
-        generate_validated_data_models(
+        generate_data_views(
             ARTIFACTS / "schemas.json",
             "schema_generation_fixture",
             tmp_path / "models.rs",
@@ -313,7 +313,7 @@ def test_generate_validated_data_models_rejects_unknown_root_key(tmp_path: Path)
         )
 
 
-def test_generate_validated_data_models_rejects_stub_package_inside_rust_module_tree(tmp_path: Path) -> None:
+def test_generate_data_views_rejects_stub_package_inside_rust_module_tree(tmp_path: Path) -> None:
     """Reject colliding output trees before replacing any caller-owned files."""
     rust = tmp_path / "models.rs"
     stub_package = tmp_path / "models"
@@ -322,7 +322,7 @@ def test_generate_validated_data_models_rejects_stub_package_inside_rust_module_
     marker.write_text("preserve this file\n", encoding="UTF-8")
 
     with pytest.raises(ValueError, match="stub package must be outside the generated Rust module tree"):
-        generate_validated_data_models(
+        generate_data_views(
             ARTIFACTS / "schemas.json",
             "schema_generation_fixture",
             rust,
@@ -362,7 +362,7 @@ def test_nested_names_preserve_canonical_reuse_and_item_guarantees(tmp_path: Pat
         encoding="UTF-8",
     )
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"external": ("EosConfig", "EOSConfig")})
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"external": ("EosConfig", "EOSConfig")})
     stub = _combined_stub_source(pyi)
     classes = _stub_classes(pyi)
     assert {
@@ -390,13 +390,13 @@ def test_nested_names_preserve_canonical_reuse_and_item_guarantees(tmp_path: Pat
     assert rust_source.count('python(name = "EOSConfig.Section.Settings",') == 1
     assert "pub mod eos_config;" in rust_source
     projected_rust, projected_pyi = tmp_path / "projected.rs", tmp_path / "projected_stubs"
-    generate_validated_data_models(
+    generate_data_views(
         source, "fixture", projected_rust, projected_pyi, "Fixture", "Fixture", root_keys=["first"], reused_schemas={"external": ("EosConfig", "EOSConfig")}
     )
     assert "EOSConfig.Section.Settings" in _stub_classes(projected_pyi)
 
 
-def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -> None:
+def test_generate_data_views_normalizes_identifiers(tmp_path: Path) -> None:
     """Escape language keywords while preserving case-distinct schema names."""
     source = tmp_path / "schemas.json"
     source.write_text(
@@ -421,16 +421,16 @@ def test_generate_validated_data_models_normalizes_identifiers(tmp_path: Path) -
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = _combined_rust_source(rust)
     pyi_source = _combined_stub_source(pyi)
     assert re.search(r'#\[data_view\(schema = Str\(\d+\), rename = "match"\)\]', rust_source)
-    assert "pub field_match: ::validated_data::Field<&'a str>" in rust_source
+    assert "pub field_match: ::data_views::Field<&'a str>" in rust_source
     assert re.search(r'#\[data_view\(schema = Str\(\d+\), rename = "override"\)\]', rust_source)
-    assert "pub field_override: ::validated_data::Field<&'a str>" in rust_source
-    assert "pub Vxlan1: ::validated_data::Field<" in rust_source
-    assert "pub vxlan1: ::validated_data::Field<" in rust_source
+    assert "pub field_override: ::data_views::Field<&'a str>" in rust_source
+    assert "pub Vxlan1: ::data_views::Field<" in rust_source
+    assert "pub vxlan1: ::data_views::Field<" in rust_source
     assert rust_source.count("pub struct Vxlan1Slot") == 2
     assert rust_source.count("pub struct FooBarSlot") == 2
     assert "pub struct View<'a, Mode>" in rust_source
@@ -470,13 +470,13 @@ def test_validation_modes_preserve_reuse_and_python_presence_contracts(tmp_path:
         encoding="UTF-8",
     )
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"shared": ("Shared", "Shared")})
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"shared": ("Shared", "Shared")})
     rust_source = _combined_rust_source(rust)
     pyi_source = _combined_stub_source(pyi)
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
-    assert "pub strict: ::validated_data::Field<super::shared::Shared<'a, Mode>>" in rust_source
-    assert "pub patch: ::validated_data::Field<super::shared::Shared<'a, ::validated_data::RelaxedValidated>>" in rust_source
-    assert "(::validated_data::RequiredValue<i64, Mode>);" in rust_source
+    assert "pub strict: ::data_views::Field<super::shared::Shared<'a, Mode>>" in rust_source
+    assert "pub patch: ::data_views::Field<super::shared::Shared<'a, ::data_views::RelaxedValidated>>" in rust_source
+    assert "(::data_views::RequiredValue<i64, Mode>);" in rust_source
     assert "def strict(self) -> Shared | None:" in pyi_source
     assert "def patch(self) -> OpaqueData | None:" in pyi_source
     assert "def name(self) -> str:" in pyi_source
@@ -514,11 +514,11 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
         encoding="UTF-8",
     )
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"shared": ("Shared", "Shared")})
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"shared": ("Shared", "Shared")})
     rust_source = _combined_rust_source(rust)
     assert "data_view(list, primary_key(name), python(" in rust_source
     assert rust_source.count("pub struct Shared<'a, Mode>") == 1
-    assert "pub name: ::validated_data::Field<&'a str>" in rust_source
+    assert "pub name: ::data_views::Field<&'a str>" in rust_source
     pyi_source = _combined_stub_source(pyi)
     assert "class Duplicates(_List[Fixture.DuplicatesItem]):" in pyi_source
     assert "class DuplicatesItem(Shared):" in pyi_source
@@ -540,12 +540,12 @@ def test_duplicate_key_lists_keep_sequence_api_and_guaranteed_item_keys(tmp_path
     assert "indexed_list" not in rust_source
 
 
-def test_generate_validated_data_models_uses_language_specific_root_names(tmp_path: Path) -> None:
+def test_generate_data_views_uses_language_specific_root_names(tmp_path: Path) -> None:
     """Honor the naming convention selected independently for each generated language."""
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(
+    generate_data_views(
         ARTIFACTS / "schemas.json",
         "schema_generation_fixture",
         rust,
@@ -563,7 +563,7 @@ def test_generate_validated_data_models_uses_language_specific_root_names(tmp_pa
     assert "class AvdDesign(_Model):" not in pyi_source
 
 
-def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_path: Path) -> None:
+def test_generate_data_views_skips_removed_dangling_primary_key(tmp_path: Path) -> None:
     """Keep released-schema tombstones out of the nominal generated API."""
     source = tmp_path / "schemas.json"
     source.write_text(
@@ -586,7 +586,7 @@ def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_p
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = _combined_rust_source(rust)
     pyi_source = _combined_stub_source(pyi)
@@ -595,7 +595,7 @@ def test_generate_validated_data_models_skips_removed_dangling_primary_key(tmp_p
     assert "historic_values" not in pyi_source
 
 
-def test_generate_validated_data_models_keeps_dynamic_model_descriptors(tmp_path: Path) -> None:
+def test_generate_data_views_keeps_dynamic_model_descriptors(tmp_path: Path) -> None:
     """Keep collection typing below data-dependent keys without exposing a named accessor."""
     source = tmp_path / "schemas.json"
     source.write_text(
@@ -617,11 +617,11 @@ def test_generate_validated_data_models_keeps_dynamic_model_descriptors(tmp_path
     rust = tmp_path / "models.rs"
     pyi = tmp_path / "models_stubs"
 
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture")
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture")
 
     rust_source = _combined_rust_source(rust)
     assert re.search(r'#\[data_view\(schema = Dict\(\d+\), python_name = "selectors", dynamic = "selectors.names"\)\]', rust_source)
-    assert "pub selectors_names: ::validated_data::Field<DynamicSlot0<'a, Mode>>" in rust_source
+    assert "pub selectors_names: ::data_views::Field<DynamicSlot0<'a, Mode>>" in rust_source
     assert "pub struct DynamicSlot0" in rust_source
     assert re.search(r'python\(name = "Fixture._DynamicKeys.Selectors", schema = Dict\(\d+\)\)', rust_source)
     classes = _stub_classes(pyi)
@@ -653,7 +653,7 @@ def test_dynamic_groups_use_schema_names_and_preserve_reused_types(tmp_path: Pat
         encoding="UTF-8",
     )
     rust, pyi = tmp_path / "models.rs", tmp_path / "models_stubs"
-    generate_validated_data_models(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"external": ("External", "External")})
+    generate_data_views(source, "fixture", rust, pyi, "Fixture", "Fixture", reused_schemas={"external": ("External", "External")})
     classes = _stub_classes(pyi)
     groups = {node.name: ast.unparse(node.returns) for node in classes["Fixture._DynamicKeys"].body if isinstance(node, ast.FunctionDef)}
     assert groups == {"node_types": "_DynamicCollection[Fixture._DynamicKeys.NodeTypes]", "field_class": "_DynamicCollection[External]"}
@@ -681,4 +681,4 @@ def test_dynamic_group_name_collisions_are_rejected(tmp_path: Path) -> None:
         encoding="UTF-8",
     )
     with pytest.raises(ValueError, match=r"conflicting dynamic key group Fixture\.same_name"):
-        generate_validated_data_models(source, "fixture", tmp_path / "models.rs", tmp_path / "models_stubs", "Fixture", "Fixture")
+        generate_data_views(source, "fixture", tmp_path / "models.rs", tmp_path / "models_stubs", "Fixture", "Fixture")

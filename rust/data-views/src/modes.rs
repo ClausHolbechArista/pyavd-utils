@@ -101,5 +101,5 @@ pub type RequiredValue<T, Mode> = <Mode as ValidationMode>::Required<T>;
     reason = "checked model construction makes absent guaranteed values a programming invariant violation"
 )]
 pub(crate) fn invariant_failure() -> ! {
-    panic!("checked validated-data view invariant violated")
+    panic!("checked data-view invariant violated")
 }

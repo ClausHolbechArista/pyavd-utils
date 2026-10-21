@@ -8,7 +8,7 @@ import ast
 import re
 from pathlib import Path
 
-from pyavd_utils_gen.validated_data_generation import generate_validated_data_models
+from pyavd_utils_gen.data_view_generation import generate_data_views
 
 
 def test_native_catalog_and_stub_generation_is_deterministic(tmp_path: Path) -> None:
@@ -17,13 +17,13 @@ def test_native_catalog_and_stub_generation_is_deterministic(tmp_path: Path) -> 
     pyi = tmp_path / "models_stubs"
     rust = tmp_path / "models.rs"
     arguments = (source, "schema_generation_fixture", rust, pyi, "SchemaGenerationFixture", "SchemaGenerationFixture")
-    generate_validated_data_models(*arguments)
+    generate_data_views(*arguments)
     stub_before = {path.relative_to(pyi): path.read_bytes() for path in sorted(pyi.glob("*.pyi"))}
     root_before = rust.read_text()
     modules_before = {path.relative_to(rust.with_suffix("")): path.read_bytes() for path in rust.with_suffix("").rglob("*.rs")}
     (pyi / "obsolete.pyi").write_text("class Obsolete: ...\n")
     (pyi / "keep.txt").write_text("not generator-owned\n")
-    generate_validated_data_models(*arguments)
+    generate_data_views(*arguments)
     modules_after = {path.relative_to(rust.with_suffix("")): path.read_bytes() for path in rust.with_suffix("").rglob("*.rs")}
     declarations = "\n".join(path.read_text() for path in rust.with_suffix("").rglob("*.rs"))
     stub_after = {path.relative_to(pyi): path.read_bytes() for path in sorted(pyi.glob("*.pyi"))}

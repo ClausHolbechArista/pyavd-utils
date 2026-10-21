@@ -12,12 +12,12 @@
 //! operate on primary keys. Equality compares complete ordered contents of the same nominal type.
 
 use crate::values::ListHandle;
+use data_views::PrimaryKeyValue;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList, PySlice, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, PyVisit};
-use validated_data::PrimaryKeyValue;
 
 use crate::descriptors::{PyValueHandle, ResolvedTarget, equality_result};
 

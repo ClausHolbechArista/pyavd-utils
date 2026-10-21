@@ -88,7 +88,7 @@ _RUST_KEYWORDS = frozenset(
 _PYTHON_SCALAR_TYPES = {"Bool": "bool", "Int": "int", "Str": "str"}
 
 
-def generate_validated_data_models(
+def generate_data_views(
     source: Path,
     schema_name: str,
     rust_destination: Path,
@@ -115,7 +115,7 @@ def generate_validated_data_models(
         python_root_name: Public Python name of the root model, using Python naming conventions.
         root_keys: Optional static root keys to expose. Descendants of selected keys
             remain complete, while unselected root branches are omitted from the
-            generated API. The runtime validated-data archive remains complete.
+            generated API. The runtime data archive remains complete.
         reused_schemas: Schema names whose complete generated model catalogs should be
             reused for pure cross-schema references. Values contain the Rust and Python
             root names respectively.
@@ -160,7 +160,7 @@ def _project_registry(registry: dict[str, Any], root_keys: list[str]) -> dict[st
     unknown_root_keys = requested_root_keys - available_root_keys
     if unknown_root_keys:
         unknown = ", ".join(sorted(unknown_root_keys))
-        msg = f"unknown static root key(s) for validated-data generation: {unknown}"
+        msg = f"unknown static root key(s) for data-views generation: {unknown}"
         raise ValueError(msg)
 
     selected_models = {int(root_id) for root_id in registry["roots"].values()}
@@ -416,8 +416,8 @@ def _render_rust(
     primary_root_name = _rust_type_identifier(root_names[primary_schema_name])
     output.extend(
         [
-            "pub const REGISTRY: ::validated_data::ModelRegistry = ::validated_data::ModelRegistry {\n",
-            (f"    root_model: <{root_modules[primary_schema_name]}::{primary_root_name}<'static> as ::validated_data::ArchiveModel>::DESCRIPTOR,\n"),
+            "pub const REGISTRY: ::data_views::ModelRegistry = ::data_views::ModelRegistry {\n",
+            (f"    root_model: <{root_modules[primary_schema_name]}::{primary_root_name}<'static> as ::data_views::ArchiveModel>::DESCRIPTOR,\n"),
             "    hash: REGISTRY_HASH,\n",
             "};\n",
         ]
@@ -502,7 +502,7 @@ def _render_rust_model(
         options.append(f"python({python_options})")
     attribute_options = f"({', '.join(options)})" if options else ""
     output = [
-        f"{indent}#[::validated_data::data_view{attribute_options}]\n",
+        f"{indent}#[::data_views::data_view{attribute_options}]\n",
         f"{indent}pub struct {type_name}<'a, Mode> ",
     ]
     if kind == "Dict":
@@ -529,14 +529,14 @@ def _render_rust_model(
             attribute = ", ".join(attributes)
             if attribute:
                 output.append(f"{indent}    #[data_view({attribute})]\n")
-            wrapper = f"::validated_data::RequiredValue<{target_type}, Mode>" if field["required"] else f"::validated_data::Field<{target_type}>"
+            wrapper = f"::data_views::RequiredValue<{target_type}, Mode>" if field["required"] else f"::data_views::Field<{target_type}>"
             output.append(f"{indent}    pub {accessor_names[int(field['id'])]}: {wrapper},\n")
         output.append(f"{indent}}}\n")
     elif item is None:
         output.append(";\n")
     else:
         target_type = _rust_target(item, models, child_names, namespace_name, schema_name, scope, locations)
-        wrapper = f"::validated_data::RequiredValue<{target_type}, Mode>" if item["required"] else f"::validated_data::Field<{target_type}>"
+        wrapper = f"::data_views::RequiredValue<{target_type}, Mode>" if item["required"] else f"::data_views::Field<{target_type}>"
         attribute = "#[data_view(relaxed)] " if item["relaxed"] else ""
         output.append(f"({attribute}{wrapper});\n")
     model_fields = [field for field in fields if _target(field)[0] == "Model"]
@@ -675,7 +675,7 @@ def _rust_target(
     else:
         _, type_name = child_names[int(field["id"])]
         qualified = type_name if namespace_name is None else f"{namespace_name}::{type_name}"
-    mode = "::validated_data::RelaxedValidated" if field["relaxed"] else "Mode"
+    mode = "::data_views::RelaxedValidated" if field["relaxed"] else "Mode"
     return f"{qualified}<'a, {mode}>"
 
 
@@ -982,4 +982,4 @@ def _render_pyi_package(definitions: dict[str, str], root_name: str, rust_root_n
     return output
 
 
-__all__ = ["generate_validated_data_models"]
+__all__ = ["generate_data_views"]
