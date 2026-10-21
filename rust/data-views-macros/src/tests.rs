@@ -9,6 +9,49 @@ use quote::quote;
 use syn::parse_quote;
 
 #[test]
+fn python_feature_gates_only_the_binding_implementation() {
+    let dictionary = parse_quote!(
+        struct Item<'a, Mode> {
+            name: Field<&'a str>,
+        }
+    );
+    let file: syn::File = syn::parse2(
+        expand(
+            quote!(python(name = "Item", feature = "python")),
+            &dictionary,
+        )
+        .expect("feature-gated Python metadata"),
+    )
+    .expect("valid generated Rust");
+    let mut gated_bindings = 0;
+    for item in file.items {
+        if let syn::Item::Impl(implementation) = item {
+            let is_binding = implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                path.segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "PythonModel")
+            });
+            assert_eq!(
+                implementation
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("cfg")),
+                is_binding
+            );
+            if is_binding {
+                gated_bindings += 1;
+                let attribute = implementation.attrs.first().expect("feature attribute");
+                assert_eq!(
+                    quote!(#attribute).to_string(),
+                    "# [cfg (feature = \"python\")]"
+                );
+            }
+        }
+    }
+    assert_eq!(gated_bindings, 1);
+}
+
+#[test]
 fn indexed_lists_require_named_keys() {
     let item = parse_quote!(
         struct Items<'a, Mode>(Field<Item<'a, Mode>>);

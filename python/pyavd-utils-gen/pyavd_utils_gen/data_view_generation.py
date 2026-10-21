@@ -97,6 +97,7 @@ def generate_data_views(
     python_root_name: str,
     root_keys: list[str] | None = None,
     reused_schemas: dict[str, tuple[str, str]] | None = None,
+    python_feature: str | None = None,
 ) -> None:
     """
     Generate checked-in Rust views, native Python bindings, and Python typing declarations.
@@ -119,6 +120,9 @@ def generate_data_views(
         reused_schemas: Schema names whose complete generated model catalogs should be
             reused for pure cross-schema references. Values contain the Rust and Python
             root names respectively.
+        python_feature: Optional Cargo feature of the generated crate that enables Python
+            binding metadata. Rust models and descriptors are always available. Without a
+            feature name, Python metadata is compiled unconditionally.
     """
     rust_module_directory = rust_destination.with_suffix("").resolve()
     if pyi_destination.resolve().is_relative_to(rust_module_directory):
@@ -136,7 +140,7 @@ def generate_data_views(
     models = list(registry["models"])
     fields = list(registry["fields"])
     root_model = int(registry["root"])
-    rust_sources = _render_rust(registry, models, fields, rust_root_names, names)
+    rust_sources = _render_rust(registry, models, fields, rust_root_names, names, python_feature)
     _write_rust(rust_destination, rust_sources)
     root_modules = {python_root_names[schema]: _rust_module_identifier(root_name) for schema, root_name in rust_root_names.items()}
     stubs = _render_pyi(models, fields, names, rust_root_name, root_model, root_modules)
@@ -365,6 +369,7 @@ def _render_rust(
     fields: list[dict[str, Any]],
     root_names: dict[str, str],
     names: dict[int, str],
+    python_feature: str | None,
 ) -> dict[tuple[str, ...], str]:
     """
     Render schema roots and one source file per locally defined root-level model.
@@ -410,6 +415,7 @@ def _render_rust(
                 "",
                 module_outputs,
                 python_names,
+                python_feature,
             )
         )
     primary_schema_name = next(name for name, root_id in registry["roots"].items() if int(root_id) == int(registry["root"]))
@@ -461,6 +467,7 @@ def _render_rust_model(
     indent: str,
     module_outputs: dict[tuple[str, ...], list[str]],
     python_names: dict[int, str],
+    python_feature: str | None,
 ) -> list[str]:
     """
     Render one nominal model, using files only at the schema root's immediate keys.
@@ -497,6 +504,8 @@ def _render_rust_model(
             options = [list_kind, f"primary_key({key_names})"]
     if model_id in python_names:
         python_options = f"name = {json.dumps(python_names[model_id])}, schema = {_schema_identity(model['schema_id'])}"
+        if python_feature is not None:
+            python_options += f", feature = {json.dumps(python_feature)}"
         if primary_keys:
             python_options += f", item_name = {json.dumps(_keyed_item_name(model, python_names))}"
         options.append(f"python({python_options})")
@@ -574,6 +583,7 @@ def _render_rust_model(
                 "",
                 module_outputs,
                 python_names,
+                python_feature,
             )
             # Other schemas use the parent facade for this model. Its descendants retain
             # their public module paths, such as devices::Item.
@@ -594,6 +604,7 @@ def _render_rust_model(
                 child_indent,
                 module_outputs,
                 python_names,
+                python_feature,
             )
         )
     if inline_namespace:

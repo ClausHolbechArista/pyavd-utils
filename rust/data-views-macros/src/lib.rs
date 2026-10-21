@@ -53,6 +53,9 @@ mod tests;
 /// `data_views_py::PythonModel` implementation whose fields reference the original Rust
 /// descriptors. Non-Python declarations need no Python binding dependency. Dynamic fields use
 /// `python_name = "..."` for a typed group under `_dynamic_keys`, not a static property.
+/// `python(feature = "python", name = "...")` gates the binding implementation on a feature
+/// of the declaring crate. The Rust view and its descriptors remain available without that
+/// feature, allowing the same declarations to serve Rust-only and Python-enabled consumers.
 /// `schema = Str(0)` on a field and `python(..., schema = Dict(0))` on a model identify nodes
 /// in the matching compiled schema for default lookup. Relaxed relationships remain opaque.
 #[proc_macro_attribute]
@@ -77,6 +80,7 @@ struct PythonOptions {
     name: Option<LitStr>,
     item_name: Option<LitStr>,
     schema: Option<Tokens>,
+    feature: Option<LitStr>,
 }
 
 /// Parse a compiled schema identity without making Rust-only views depend on avdschema.
@@ -120,6 +124,8 @@ fn options(arguments: Tokens) -> syn::Result<Options> {
                     python.item_name = Some(nested.value()?.parse()?);
                 } else if nested.path.is_ident("schema") {
                     python.schema = Some(schema_identity(&nested)?);
+                } else if nested.path.is_ident("feature") {
+                    python.feature = Some(nested.value()?.parse()?);
                 } else {
                     return Err(nested.error("unknown Python binding option"));
                 }
@@ -533,6 +539,9 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
     let extra_types = &expansion.extra_types;
     let indexed = options.indexed;
     let python = if let Some(python) = options.python {
+        let feature = python
+            .feature
+            .map(|feature| quote!(#[cfg(feature = #feature)]));
         let python_name = python.name;
         let schema = python.schema.unwrap_or_else(|| quote!(None));
         let item_name = python.item_name.map_or_else(
@@ -545,6 +554,7 @@ fn expand(arguments: Tokens, item: &ItemStruct) -> syn::Result<Tokens> {
             .as_ref()
             .map_or_else(|| quote!(None), |target| quote!(Some(#target)));
         quote! {
+            #feature
             impl<'a, __DataViewMode: ::data_views::ValidationMode> ::data_views_py::PythonModel for #name<'a, __DataViewMode> {
                 const BINDING: ::data_views_py::ModelBinding = ::data_views_py::ModelBinding {
                     name: #python_name,

@@ -14,6 +14,28 @@ from pyavd_utils_gen.data_view_generation import generate_data_views
 ARTIFACTS = Path(__file__).parent / "artifacts"
 
 
+def test_python_feature_changes_only_binding_annotations(tmp_path: Path) -> None:
+    """Opt-in Python compilation preserves Rust model identities and Python typing contracts."""
+    source = ARTIFACTS / "schemas.json"
+    baseline = tmp_path / "baseline"
+    gated = tmp_path / "gated"
+    for destination, feature in ((baseline, None), (gated, "python")):
+        generate_data_views(
+            source,
+            "schema_generation_fixture",
+            destination / "models.rs",
+            destination / "stubs",
+            "Fixture",
+            "Fixture",
+            python_feature=feature,
+        )
+    baseline_rust = _rust_sources(baseline / "models.rs")
+    gated_rust = _rust_sources(gated / "models.rs")
+    assert any(', feature = "python"' in content for content in gated_rust.values())
+    assert {path: content.replace(', feature = "python"', "") for path, content in gated_rust.items()} == baseline_rust
+    assert _stub_sources(gated / "stubs") == _stub_sources(baseline / "stubs")
+
+
 def _rust_sources(root: Path) -> dict[str, str]:
     """Read one generated Rust module tree using stable relative names."""
     module_directory = root.with_suffix("")
