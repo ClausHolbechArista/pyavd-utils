@@ -128,19 +128,27 @@ impl<'input> ValidatableValue for Node<'input> {
     // TODO: Consider a simpler Coerced type where we don't carry unused metadata.
 
     fn coerce_null(&self) -> Self::Coerced {
-        Node::new(Value::Null, self.span).with_source(self.source.clone())
+        Node::new(Value::Null, self.span, self.source.clone())
     }
 
     fn coerce_bool(&self, value: bool) -> Self::Coerced {
-        Node::new(Value::Bool(value), self.span).with_source(self.source.clone())
+        Node::new(Value::Bool(value), self.span, self.source.clone())
     }
 
     fn coerce_int(&self, value: i64) -> Self::Coerced {
-        Node::new(Value::Int(Integer::I64(value)), self.span).with_source(self.source.clone())
+        Node::new(
+            Value::Int(Integer::I64(value)),
+            self.span,
+            self.source.clone(),
+        )
     }
 
     fn coerce_str(&self, value: String) -> Self::Coerced {
-        Node::new(Value::String(Cow::Owned(value)), self.span).with_source(self.source.clone())
+        Node::new(
+            Value::String(Cow::Owned(value)),
+            self.span,
+            self.source.clone(),
+        )
     }
 
     fn coerce_sequence(&self, items: Vec<Self::Coerced>) -> Self::Coerced {
@@ -152,12 +160,12 @@ impl<'input> ValidatableValue for Node<'input> {
                     .collect(),
             ),
             self.span,
+            self.source.clone(),
         )
-        .with_source(self.source.clone())
     }
 
     fn coerce_mapping(&self, items: Vec<Self::CoercedMappingItem>) -> Self::Coerced {
-        Node::new(Value::Mapping(items), self.span).with_source(self.source.clone())
+        Node::new(Value::Mapping(items), self.span, self.source.clone())
     }
 
     fn clone_to_coerced(&self) -> Self::Coerced {
@@ -447,31 +455,36 @@ mod tests {
     }
 
     fn string_node(string: &str) -> Node<'static> {
-        Node::new(Value::String(Cow::Owned(string.to_owned())), make_span())
+        Node::new(
+            Value::String(Cow::Owned(string.to_owned())),
+            make_span(),
+            None,
+        )
     }
 
     fn int_node(i: i64) -> Node<'static> {
-        Node::new(Value::Int(Integer::I64(i)), make_span())
+        Node::new(Value::Int(Integer::I64(i)), make_span(), None)
     }
 
     fn bool_node(value: bool) -> Node<'static> {
-        Node::new(Value::Bool(value), make_span())
+        Node::new(Value::Bool(value), make_span(), None)
     }
 
     fn float_node(value: f64) -> Node<'static> {
-        Node::new(Value::Float(value), make_span())
+        Node::new(Value::Float(value), make_span(), None)
     }
 
     fn string_node_with_span(string: &str, span: std::ops::Range<u32>) -> Node<'static> {
         Node::new(
             Value::String(Cow::Owned(string.to_owned())),
             yaml_parser::Span::new(span),
+            None,
         )
     }
 
     #[test]
     fn test_yaml_null() {
-        let node = Node::new(Value::Null, make_span());
+        let node = Node::new(Value::Null, make_span(), None);
         assert!(node.is_null());
         assert!(node.as_str().is_none());
         assert!(node.as_mapping().is_none());
@@ -479,13 +492,13 @@ mod tests {
 
     #[test]
     fn test_yaml_scalar_type_checks() {
-        let null = Node::new(Value::Null, make_span());
+        let null = Node::new(Value::Null, make_span(), None);
         let string = string_node("hello");
         let int = int_node(42);
         let bool = bool_node(true);
         let float = float_node(42.0);
-        let sequence = Node::new(Value::Sequence(Vec::new()), make_span());
-        let mapping = Node::new(Value::Mapping(Vec::new()), make_span());
+        let sequence = Node::new(Value::Sequence(Vec::new()), make_span(), None);
+        let mapping = Node::new(Value::Mapping(Vec::new()), make_span(), None);
 
         assert!(string.is_str());
         assert!(int.is_int());
@@ -539,14 +552,14 @@ mod tests {
         ];
 
         for (integer, expected) in values {
-            let node = Node::new(Value::Int(integer), make_span());
+            let node = Node::new(Value::Int(integer), make_span(), None);
             assert_eq!(node.as_str().as_deref(), Some(expected.as_str()));
         }
     }
 
     #[test]
     fn test_yaml_float_to_str_coercion() {
-        let node = Node::new(Value::Float(1.5), make_span());
+        let node = Node::new(Value::Float(1.5), make_span(), None);
         // Float coerces to string
         assert_eq!(node.as_str().as_deref(), Some("1.5"));
     }
@@ -560,14 +573,14 @@ mod tests {
 
     #[test]
     fn test_yaml_float_value_type_is_not_int() {
-        let node = Node::new(Value::Float(1.5), make_span());
+        let node = Node::new(Value::Float(1.5), make_span(), None);
         assert_ne!(node.value_type(), crate::feedback::Type::Int);
     }
 
     #[test]
     fn test_yaml_bool() {
-        let node_true = Node::new(Value::Bool(true), make_span());
-        let node_false = Node::new(Value::Bool(false), make_span());
+        let node_true = Node::new(Value::Bool(true), make_span(), None);
+        let node_false = Node::new(Value::Bool(false), make_span(), None);
         assert_eq!(node_true.as_bool(), Some(true));
         assert_eq!(node_false.as_bool(), Some(false));
         assert_eq!(node_true.as_i64(), Some(1));
@@ -595,6 +608,7 @@ mod tests {
                 MappingPair::new(make_span(), string_node("age"), int_node(30)),
             ]),
             make_span(),
+            None,
         );
 
         let mapping = node.as_mapping().expect("should be a mapping");
@@ -640,6 +654,7 @@ mod tests {
                 ),
             ]),
             make_span(),
+            None,
         );
         let mapping = node.as_mapping().expect("should be a mapping");
 
@@ -674,6 +689,7 @@ mod tests {
                 ),
             ]),
             make_span(),
+            None,
         );
         let mapping = node.as_mapping().expect("should be a mapping");
 
@@ -699,6 +715,7 @@ mod tests {
                 SequenceItem::new(make_span(), int_node(3)),
             ]),
             make_span(),
+            None,
         );
 
         let seq = node.as_sequence().expect("should be a sequence");
@@ -725,9 +742,11 @@ mod tests {
                         string_node("value"),
                     )]),
                     make_span(),
+                    None,
                 ),
             )]),
             make_span(),
+            None,
         );
 
         let nested = node.get("nested").expect("should have nested");
@@ -743,17 +762,17 @@ mod tests {
             Value::Mapping(vec![
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Null, make_span()),
+                    Node::new(Value::Null, make_span(), None),
                     string_node("null"),
                 ),
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Sequence(Vec::new()), make_span()),
+                    Node::new(Value::Sequence(Vec::new()), make_span(), None),
                     string_node("sequence"),
                 ),
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Mapping(Vec::new()), make_span()),
+                    Node::new(Value::Mapping(Vec::new()), make_span(), None),
                     string_node("mapping"),
                 ),
                 MappingPair::new(make_span(), float_node(1.5), string_node("float")),
@@ -761,6 +780,7 @@ mod tests {
                 MappingPair::new(make_span(), string_node("kept"), string_node("string")),
             ]),
             make_span(),
+            None,
         );
 
         let mapping = node.as_mapping().expect("should be a mapping");
@@ -799,11 +819,12 @@ mod tests {
                 MappingPair::new(make_span(), int_node(123), string_node("int_key_value")),
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Bool(true), make_span()),
+                    Node::new(Value::Bool(true), make_span(), None),
                     string_node("bool_key_value"),
                 ),
             ]),
             make_span(),
+            None,
         );
 
         let mapping = node.as_mapping().expect("should be a mapping");
@@ -821,11 +842,15 @@ mod tests {
     #[test]
     fn test_yaml_coercion_builders_preserve_source_and_span() {
         let source: std::sync::Arc<str> = "fixture-a".into();
-        let original = Node::new(Value::Null, yaml_parser::Span::new(10..20))
-            .with_source(Some(source.clone()));
+        let original = Node::new(
+            Value::Null,
+            yaml_parser::Span::new(10..20),
+            Some(source.clone()),
+        );
         let item = Node::new(
             Value::String(Cow::Borrowed("item")),
             yaml_parser::Span::new(12..16),
+            None,
         );
 
         let coerced_null = original.coerce_null();
@@ -862,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_yaml_clone_to_coerced_owns_borrowed_data() {
-        let node = Node::new(Value::String(Cow::Borrowed("borrowed")), make_span());
+        let node = Node::new(Value::String(Cow::Borrowed("borrowed")), make_span(), None);
         let coerced = node.clone_to_coerced();
 
         assert!(matches!(coerced.value, Value::String(Cow::Owned(value)) if value == "borrowed"));
@@ -877,28 +902,33 @@ mod tests {
                     string_node("items"),
                     Node::new(
                         Value::Sequence(vec![
-                            SequenceItem::new(make_span(), Node::new(Value::Null, make_span())),
+                            SequenceItem::new(
+                                make_span(),
+                                Node::new(Value::Null, make_span(), None),
+                            ),
                             SequenceItem::new(make_span(), bool_node(true)),
                             SequenceItem::new(make_span(), int_node(42)),
                             SequenceItem::new(
                                 make_span(),
-                                Node::new(Value::Int(Integer::U64(u64::MAX)), make_span()),
+                                Node::new(Value::Int(Integer::U64(u64::MAX)), make_span(), None),
                             ),
                             SequenceItem::new(make_span(), float_node(1.5)),
                             SequenceItem::new(make_span(), string_node("text")),
                         ]),
                         make_span(),
+                        None,
                     ),
                 ),
                 MappingPair::new(make_span(), int_node(7), string_node("skipped")),
                 MappingPair::new(make_span(), bool_node(true), string_node("bool key")),
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Sequence(Vec::new()), make_span()),
+                    Node::new(Value::Sequence(Vec::new()), make_span(), None),
                     string_node("complex key"),
                 ),
             ]),
             make_span(),
+            None,
         );
 
         let mut expected = std::collections::HashMap::new();
@@ -935,11 +965,12 @@ mod tests {
                 MappingPair::new(make_span(), int_node(123), string_node("int_key_value")),
                 MappingPair::new(
                     make_span(),
-                    Node::new(Value::Bool(true), make_span()),
+                    Node::new(Value::Bool(true), make_span(), None),
                     string_node("bool_key_value"),
                 ),
             ]),
             make_span(),
+            None,
         );
 
         assert!(node.get("123").is_none());
@@ -952,7 +983,7 @@ mod tests {
             Value::Mapping(vec![
                 MappingPair::new(
                     yaml_parser::Span::new(1..5),
-                    Node::new(Value::Null, yaml_parser::Span::new(1..1)),
+                    Node::new(Value::Null, yaml_parser::Span::new(1..1), None),
                     string_node("skipped"),
                 ),
                 MappingPair::new(
@@ -960,21 +991,25 @@ mod tests {
                     Node::new(
                         Value::String(Cow::Borrowed("foo")),
                         yaml_parser::Span::new(10..13),
+                        None,
                     ),
-                    Node::new(Value::Null, yaml_parser::Span::new(15..20)),
+                    Node::new(Value::Null, yaml_parser::Span::new(15..20), None),
                 ),
             ]),
             yaml_parser::Span::new(0..31),
+            None,
         );
         let coerced = original.coerce_mapping(vec![MappingPair::new(
             yaml_parser::Span::new(10..30),
             Node::new(
                 Value::String(Cow::Owned("foo".to_owned())),
                 yaml_parser::Span::new(10..13),
+                None,
             ),
             Node::new(
                 Value::String(Cow::Owned("bar".to_owned())),
                 yaml_parser::Span::new(14..20),
+                None,
             ),
         )]);
 
