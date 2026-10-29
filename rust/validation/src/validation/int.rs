@@ -136,6 +136,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::InvalidType {
@@ -157,6 +158,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::IntegerOutOfRange {
@@ -192,6 +194,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: Some(crate::feedback::SourceSpan { start: 0, end: 0 }),
                 issue: Violation::IntegerOutOfRange {
@@ -217,6 +220,7 @@ mod tests {
         assert_eq!(
             ctx.result.infos,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: CoercionNote {
@@ -239,6 +243,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::InvalidType {
@@ -267,6 +272,7 @@ mod tests {
         assert_eq!(
             true_ctx.result.infos,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: CoercionNote {
@@ -286,6 +292,7 @@ mod tests {
         assert_eq!(
             false_ctx.result.infos,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: CoercionNote {
@@ -325,6 +332,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::InvalidValue {
@@ -361,6 +369,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::ValueBelowMinimum {
@@ -397,6 +406,7 @@ mod tests {
         assert_eq!(
             ctx.result.errors,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: Violation::ValueAboveMaximum {
@@ -424,6 +434,7 @@ mod tests {
         assert_eq!(
             ctx.result.infos,
             vec![Feedback {
+                source: None,
                 path: vec![].into(),
                 span: None,
                 issue: CoercionNote {
