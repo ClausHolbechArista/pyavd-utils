@@ -11,10 +11,12 @@ use crate::validation::first_input_diagnostic_as_pyerr;
 
 #[test]
 fn validation_result_from_validation_result_maps_violation() {
+    setup();
     let result = ::validation::ValidationResult {
         errors: vec![::validation::feedback::Feedback {
+            source: Some("fixture-a".into()),
             path: vec!["foo".into()].into(),
-            span: None,
+            span: Some(::validation::feedback::SourceSpan { start: 3, end: 9 }),
             issue: ::validation::feedback::Violation::UnexpectedKey().into(),
         }],
         warnings: vec![],
@@ -28,6 +30,29 @@ fn validation_result_from_validation_result_maps_violation() {
     assert_eq!(py_result.violations[0].message, "Invalid key.");
     assert!(py_result.deprecations.is_empty());
     assert!(py_result.ignored_eos_config_keys.is_empty());
+    pyo3::Python::attach(|py| {
+        let object = pyo3::Py::new(py, py_result).unwrap();
+        let violation = object
+            .bind(py)
+            .getattr("violations")
+            .unwrap()
+            .get_item(0)
+            .unwrap();
+        assert_eq!(
+            violation
+                .getattr("source")
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "fixture-a"
+        );
+        let span = violation.getattr("span").unwrap();
+        assert_eq!(
+            span.getattr("start").unwrap().extract::<usize>().unwrap(),
+            3
+        );
+        assert_eq!(span.getattr("end").unwrap().extract::<usize>().unwrap(), 9);
+    });
 }
 
 #[test]
@@ -35,8 +60,9 @@ fn validation_result_from_validation_result_maps_removal_to_violation_and_deprec
     let result = ::validation::ValidationResult {
         errors: vec![
             ::validation::feedback::Feedback {
+                source: Some("fixture-a".into()),
                 path: vec!["old_key".into()].into(),
-                span: None,
+                span: Some(::validation::feedback::SourceSpan { start: 0, end: 7 }),
                 issue: ::validation::feedback::Violation::Removed(
                     ::validation::feedback::Removed {
                         path: vec!["old_key".into()].into(),
@@ -49,6 +75,7 @@ fn validation_result_from_validation_result_maps_removal_to_violation_and_deprec
                 .into(),
             },
             ::validation::feedback::Feedback {
+                source: None,
                 path: vec!["old_key_without_metadata".into()].into(),
                 span: None,
                 issue: ::validation::feedback::Violation::Removed(
@@ -64,8 +91,9 @@ fn validation_result_from_validation_result_maps_removal_to_violation_and_deprec
             },
         ],
         warnings: vec![::validation::feedback::Feedback {
+            source: Some("fixture-b".into()),
             path: vec!["deprecated_key".into()].into(),
-            span: None,
+            span: Some(::validation::feedback::SourceSpan { start: 8, end: 22 }),
             issue: ::validation::feedback::Deprecated {
                 path: vec!["deprecated_key".into()].into(),
                 replacement: Some("new_deprecated_key".to_owned()).into(),
@@ -81,10 +109,14 @@ fn validation_result_from_validation_result_maps_removal_to_violation_and_deprec
 
     assert_eq!(py_result.violations.len(), 2);
     assert_eq!(py_result.violations[0].path, vec!["old_key"]);
+    assert_eq!(py_result.violations[0].source.as_deref(), Some("fixture-a"));
+    assert_eq!(py_result.violations[0].span.as_ref().unwrap().start, 0);
 
     assert_eq!(py_result.deprecations.len(), 3);
     let deprecation = &py_result.deprecations[0];
     assert!(deprecation.removed);
+    assert_eq!(deprecation.source.as_deref(), Some("fixture-a"));
+    assert_eq!(deprecation.span.as_ref().unwrap().end, 7);
     assert_eq!(deprecation.path, vec!["old_key"]);
     assert_eq!(deprecation.version.as_deref(), Some("6.0.0"));
     assert_eq!(deprecation.replacement.as_deref(), Some("new_key"));
@@ -92,13 +124,35 @@ fn validation_result_from_validation_result_maps_removal_to_violation_and_deprec
 
     let deprecation_without_metadata = &py_result.deprecations[1];
     assert!(deprecation_without_metadata.removed);
+    assert!(deprecation_without_metadata.source.is_none());
+    assert!(deprecation_without_metadata.span.is_none());
     assert_eq!(deprecation_without_metadata.replacement, None);
     assert_eq!(deprecation_without_metadata.upgrade_handler, None);
 
     let warning = &py_result.deprecations[2];
     assert!(!warning.removed);
+    assert_eq!(warning.source.as_deref(), Some("fixture-b"));
+    assert_eq!(warning.span.as_ref().unwrap().start, 8);
     assert_eq!(warning.replacement.as_deref(), Some("new_deprecated_key"));
     assert_eq!(warning.upgrade_handler, None);
+}
+
+#[test]
+fn ignored_key_response_preserves_source_and_span() {
+    let result = ::validation::ValidationResult {
+        warnings: vec![::validation::feedback::Feedback {
+            source: Some("fixture-a".into()),
+            path: vec!["ignored".into()].into(),
+            span: Some(::validation::feedback::SourceSpan { start: 0, end: 7 }),
+            issue: ::validation::feedback::IgnoredEosConfigKey {}.into(),
+        }],
+        ..Default::default()
+    };
+    let converted = ValidationResult::from_validation_result(result).unwrap();
+    assert_eq!(converted.ignored_eos_config_keys.len(), 1);
+    let warning = &converted.ignored_eos_config_keys[0];
+    assert_eq!(warning.source.as_deref(), Some("fixture-a"));
+    assert_eq!(warning.span.as_ref().unwrap().end, 7);
 }
 
 #[test]
@@ -106,6 +160,7 @@ fn validation_result_from_validation_result_internal_error_returns_pyerr() {
     setup();
     let result = ::validation::ValidationResult {
         errors: vec![::validation::feedback::Feedback {
+            source: None,
             path: vec![].into(),
             span: None,
             issue: ::validation::feedback::ErrorIssue::InternalError {
@@ -208,6 +263,8 @@ fn validate_json_py_ok() {
 
         assert_eq!(violations.len().unwrap(), expected_violations.len());
         for violation in violations.try_iter().unwrap().flatten() {
+            assert!(violation.getattr("source").unwrap().is_none());
+            assert!(violation.getattr("span").unwrap().is_none());
             let expected_violation = get_path_and_message_from_py_violation(violation);
             assert!(
                 expected_violations.contains(&expected_violation),

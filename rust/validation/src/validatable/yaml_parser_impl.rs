@@ -128,19 +128,19 @@ impl<'input> ValidatableValue for Node<'input> {
     // TODO: Consider a simpler Coerced type where we don't carry unused metadata.
 
     fn coerce_null(&self) -> Self::Coerced {
-        Node::new(Value::Null, self.span)
+        Node::new(Value::Null, self.span).with_source(self.source.clone())
     }
 
     fn coerce_bool(&self, value: bool) -> Self::Coerced {
-        Node::new(Value::Bool(value), self.span)
+        Node::new(Value::Bool(value), self.span).with_source(self.source.clone())
     }
 
     fn coerce_int(&self, value: i64) -> Self::Coerced {
-        Node::new(Value::Int(Integer::I64(value)), self.span)
+        Node::new(Value::Int(Integer::I64(value)), self.span).with_source(self.source.clone())
     }
 
     fn coerce_str(&self, value: String) -> Self::Coerced {
-        Node::new(Value::String(Cow::Owned(value)), self.span)
+        Node::new(Value::String(Cow::Owned(value)), self.span).with_source(self.source.clone())
     }
 
     fn coerce_sequence(&self, items: Vec<Self::Coerced>) -> Self::Coerced {
@@ -153,10 +153,11 @@ impl<'input> ValidatableValue for Node<'input> {
             ),
             self.span,
         )
+        .with_source(self.source.clone())
     }
 
     fn coerce_mapping(&self, items: Vec<Self::CoercedMappingItem>) -> Self::Coerced {
-        Node::new(Value::Mapping(items), self.span)
+        Node::new(Value::Mapping(items), self.span).with_source(self.source.clone())
     }
 
     fn clone_to_coerced(&self) -> Self::Coerced {
@@ -191,6 +192,10 @@ impl<'input> ValidatableValue for Node<'input> {
 
     fn is_float(&self) -> bool {
         matches!(self.value, Value::Float(_))
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     fn source_span(&self) -> Option<SourceSpan> {
@@ -274,17 +279,19 @@ impl<'a, 'input: 'a> ValidatableMapping<'a> for NodeMapping<'a, 'input> {
 
             if let Some(index) = seen_keys.get(key) {
                 if let Some(duplicate_key) = duplicate_keys.get_mut(*index) {
-                    duplicate_key.spans.push(Some(span));
+                    duplicate_key
+                        .locations
+                        .push((pair.key.source.as_deref(), Some(span)));
                 }
             } else {
                 seen_keys.insert(key, duplicate_keys.len());
                 duplicate_keys.push(MappingDuplicateKey {
                     key,
-                    spans: vec![Some(span)],
+                    locations: vec![(pair.key.source.as_deref(), Some(span))],
                 });
             }
         }
-        duplicate_keys.retain(|duplicate_key| duplicate_key.spans.len() > 1);
+        duplicate_keys.retain(|duplicate_key| duplicate_key.locations.len() > 1);
         duplicate_keys
     }
 
@@ -372,6 +379,10 @@ impl<'a, 'input: 'a> ValidatableMappingPair<'a> for NodeMappingPair<'a, 'input> 
         let mut pair = self.pair.clone();
         pair.value = value;
         pair.into_owned()
+    }
+
+    fn key_source(&self) -> Option<&str> {
+        self.pair.key.source.as_deref()
     }
 
     /// Return the span for the original YAML key node.
@@ -637,11 +648,11 @@ mod tests {
         assert_eq!(duplicate_keys.len(), 1);
         assert_eq!(duplicate_keys[0].key, "name");
         assert_eq!(
-            duplicate_keys[0].spans,
+            duplicate_keys[0].locations,
             vec![
-                Some(SourceSpan { start: 0, end: 4 }),
-                Some(SourceSpan { start: 20, end: 24 }),
-                Some(SourceSpan { start: 30, end: 34 }),
+                (None, Some(SourceSpan { start: 0, end: 4 })),
+                (None, Some(SourceSpan { start: 20, end: 24 })),
+                (None, Some(SourceSpan { start: 30, end: 34 })),
             ]
         );
     }
@@ -671,10 +682,10 @@ mod tests {
         assert_eq!(duplicate_keys.len(), 1);
         assert_eq!(duplicate_keys[0].key, "name");
         assert_eq!(
-            duplicate_keys[0].spans,
+            duplicate_keys[0].locations,
             vec![
-                Some(SourceSpan { start: 10, end: 14 }),
-                Some(SourceSpan { start: 20, end: 24 }),
+                (None, Some(SourceSpan { start: 10, end: 14 })),
+                (None, Some(SourceSpan { start: 20, end: 24 })),
             ]
         );
     }
@@ -808,8 +819,10 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_coercion_builders_preserve_span() {
-        let original = Node::new(Value::Null, yaml_parser::Span::new(10..20));
+    fn test_yaml_coercion_builders_preserve_source_and_span() {
+        let source: std::sync::Arc<str> = "fixture-a".into();
+        let original = Node::new(Value::Null, yaml_parser::Span::new(10..20))
+            .with_source(Some(source.clone()));
         let item = Node::new(
             Value::String(Cow::Borrowed("item")),
             yaml_parser::Span::new(12..16),
@@ -821,6 +834,20 @@ mod tests {
         let coerced_str = original.coerce_str("value".to_owned());
         let coerced_sequence = original.coerce_sequence(vec![item]);
 
+        let coerced_mapping = original.coerce_mapping(Vec::new());
+        for node in [
+            &coerced_null,
+            &coerced_bool,
+            &coerced_int,
+            &coerced_str,
+            &coerced_sequence,
+            &coerced_mapping,
+        ] {
+            assert!(std::sync::Arc::ptr_eq(
+                node.source.as_ref().unwrap(),
+                &source
+            ));
+        }
         assert_eq!(coerced_null.span, original.span);
         assert_eq!(coerced_bool.span, original.span);
         assert_eq!(coerced_int.span, original.span);

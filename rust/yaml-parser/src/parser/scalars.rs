@@ -58,7 +58,8 @@ where
             resolve_untagged_scalar(value, style)
         };
 
-        let base_node = Node::new(resolved_scalar.into_value(), span);
+        let base_node =
+            Node::new(resolved_scalar.into_value(), span).with_source(self.source.clone());
         let node = Self::apply_properties(base_node, props);
         self.store_anchor_node(&node);
 
