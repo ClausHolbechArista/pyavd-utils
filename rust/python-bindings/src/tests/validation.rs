@@ -11,7 +11,6 @@ use crate::validation::first_input_diagnostic_as_pyerr;
 
 #[test]
 fn validation_result_from_validation_result_maps_violation() {
-    setup();
     let result = ::validation::ValidationResult {
         errors: vec![::validation::feedback::Feedback {
             source: Some("fixture-a".into()),
@@ -28,31 +27,12 @@ fn validation_result_from_validation_result_maps_violation() {
     assert_eq!(py_result.violations.len(), 1);
     assert_eq!(py_result.violations[0].path, vec!["foo"]);
     assert_eq!(py_result.violations[0].message, "Invalid key.");
+    assert_eq!(py_result.violations[0].source.as_deref(), Some("fixture-a"));
+    let span = py_result.violations[0].span.as_ref().unwrap();
+    assert_eq!(span.start, 3);
+    assert_eq!(span.end, 9);
     assert!(py_result.deprecations.is_empty());
     assert!(py_result.ignored_eos_config_keys.is_empty());
-    pyo3::Python::attach(|py| {
-        let object = pyo3::Py::new(py, py_result).unwrap();
-        let violation = object
-            .bind(py)
-            .getattr("violations")
-            .unwrap()
-            .get_item(0)
-            .unwrap();
-        assert_eq!(
-            violation
-                .getattr("source")
-                .unwrap()
-                .extract::<String>()
-                .unwrap(),
-            "fixture-a"
-        );
-        let span = violation.getattr("span").unwrap();
-        assert_eq!(
-            span.getattr("start").unwrap().extract::<usize>().unwrap(),
-            3
-        );
-        assert_eq!(span.getattr("end").unwrap().extract::<usize>().unwrap(), 9);
-    });
 }
 
 #[test]
