@@ -357,7 +357,8 @@ mod tests {
                 .and_then(|node| node.get("key3")),
             Some(&Node::new(
                 yaml_parser::Value::String("123".to_owned().into()),
-                yaml_parser::Span::new(6..9)
+                yaml_parser::Span::new(6..9),
+                None
             ))
         );
         assert!(result.documents[1].result.errors.is_empty());
@@ -368,7 +369,8 @@ mod tests {
                 .and_then(|node| node.get("key3")),
             Some(&Node::new(
                 yaml_parser::Value::String("456".to_owned().into()),
-                yaml_parser::Span::new(20..23)
+                yaml_parser::Span::new(20..23),
+                None
             ))
         );
     }

@@ -361,23 +361,16 @@ pub struct Node<'input> {
 }
 
 impl<'input> Node<'input> {
-    /// Create a new node with just a value and span (no properties).
+    /// Create a new node with a value, span, and optional source identifier (no properties).
     #[must_use]
-    pub fn new(value: Value<'input>, span: Span) -> Self {
+    pub fn new(value: Value<'input>, span: Span, source: Option<Arc<str>>) -> Self {
         Self {
             properties: None,
             value,
             span,
-            source: None,
+            source,
             trailing_comment: None,
         }
-    }
-
-    /// Attach a shared source identifier to this node without changing its children.
-    #[must_use]
-    pub fn with_source(mut self, source: Option<Arc<str>>) -> Self {
-        self.source = source;
-        self
     }
 
     /// Create a new node with an anchor.
@@ -449,8 +442,8 @@ impl<'input> Node<'input> {
 
     /// Create a null node.
     #[must_use]
-    pub fn null(span: Span) -> Self {
-        Self::new(Value::Null, span)
+    pub fn null(span: Span, source: Option<Arc<str>>) -> Self {
+        Self::new(Value::Null, span, source)
     }
 
     /// Returns the anchor if present.
@@ -769,12 +762,13 @@ mod tests {
         let span = Span::from_usize_range(0..4);
 
         // Basic node
-        let node1 = Node::new(Value::String(Cow::Borrowed("test")), span);
+        let node1 = Node::new(Value::String(Cow::Borrowed("test")), span, None);
         assert!(!node1.has_anchor());
         assert!(!node1.has_tag());
 
         // Node with anchor (now takes &str directly)
-        let node2 = Node::new(Value::String(Cow::Borrowed("test")), span).with_anchor("myanchor");
+        let node2 =
+            Node::new(Value::String(Cow::Borrowed("test")), span, None).with_anchor("myanchor");
         assert!(node2.has_anchor());
         assert_eq!(node2.anchor(), Some("myanchor"));
         assert_eq!(
@@ -783,8 +777,8 @@ mod tests {
         );
 
         // Node with tag
-        let node3 =
-            Node::new(Value::String(Cow::Borrowed("test")), span).with_tag(Cow::Borrowed("str"));
+        let node3 = Node::new(Value::String(Cow::Borrowed("test")), span, None)
+            .with_tag(Cow::Borrowed("str"));
         assert!(node3.has_tag());
         assert_eq!(
             node3.tag().map(|property| property.value.as_ref()),
@@ -796,7 +790,7 @@ mod tests {
         );
 
         // Null node
-        let node4 = Node::null(span);
+        let node4 = Node::null(span, None);
         assert!(node4.value.is_null());
     }
 
@@ -810,7 +804,7 @@ mod tests {
         assert!(matches!(owned, Value::String(Cow::Owned(str)) if str == "test"));
 
         // Test Node::into_owned - anchors and tags are converted to owned
-        let node = Node::new(Value::String(Cow::Borrowed("test")), span)
+        let node = Node::new(Value::String(Cow::Borrowed("test")), span, None)
             .with_anchor("anchor")
             .with_tag(Cow::Borrowed("tag"));
         let owned_node: Node<'static> = node.into_owned();
@@ -827,7 +821,7 @@ mod tests {
     fn test_into_resolved_alias_root_strips_anchor_only() {
         let span = Span::from_usize_range(0..4);
         let alias_span = Span::from_usize_range(10..12);
-        let node = Node::new(Value::String(Cow::Borrowed("test")), span)
+        let node = Node::new(Value::String(Cow::Borrowed("test")), span, None)
             .with_anchor("anchor")
             .with_tag(Cow::Borrowed("tag"))
             .with_trailing_comment(Comment {

@@ -175,6 +175,7 @@ mod tests {
         let input = yaml_parser::Node::new(
             yaml_parser::Value::Int(yaml_parser::Integer::U64(123)),
             yaml_parser::Span::default(),
+            None,
         );
         let mut ctx = Context::new(None);
         let _ = schema.validate(&input, &mut ctx);
@@ -187,6 +188,7 @@ mod tests {
         let input = yaml_parser::Node::new(
             yaml_parser::Value::Int(yaml_parser::Integer::U64(i64::MAX as u64 + 1)),
             yaml_parser::Span::default(),
+            None,
         );
         let mut ctx = Context::new(None);
         let _ = schema.validate(&input, &mut ctx);
