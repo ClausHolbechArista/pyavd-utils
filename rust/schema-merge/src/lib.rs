@@ -24,7 +24,6 @@ use std::hash::Hash;
 
 use avdschema::SchemaPathError;
 use avdschema::Store;
-
 pub use identity::SemanticValue;
 
 /// An owned tree that supports merging without discarding backend metadata.
