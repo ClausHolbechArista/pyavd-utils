@@ -62,7 +62,7 @@ pytest = [
     "ruff==0.17.2",
 ]
 coverage = [
-    "coverage[toml]==7.16.2",
+    "coverage[toml]==7.17.0",
 ]
 # group used to build cross platform wheels
 build_wheel = [
@@ -77,6 +77,9 @@ dev = [
 required-version = ">=0.9.17"
 # Match Renovate's minimumReleaseAge, including transitive updates during lock-file maintenance.
 exclude-newer = "7 days"
+
+[tool.uv.dependency-groups]
+coverage = {requires-python = ">=3.11"}
 
 [tool.uv.workspace]
 members = ["python/pyavd-utils-gen"]
