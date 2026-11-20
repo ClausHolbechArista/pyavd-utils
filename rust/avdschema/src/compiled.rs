@@ -48,7 +48,9 @@ pub(crate) const ARCHIVE_FORMAT_VERSION: u32 = 1;
 pub(crate) const ARCHIVE_HEADER_LENGTH: usize = 16;
 
 /// Stable identifier of a node in one of the typed schema tables.
-#[derive(Archive, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Archive, Serialize, Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash,
+)]
 #[rkyv(derive(Clone, Copy, Debug, PartialEq, Eq, Hash))]
 pub enum SchemaId {
     /// Boolean schema table index.
@@ -372,6 +374,34 @@ pub enum SchemaDiagnostic {
         /// Normalized JSON number representation.
         value: String,
     },
+    /// An active indexed list has an unusable primary-key declaration.
+    InvalidPrimaryKey {
+        /// Schema path of the indexed list.
+        schema_path: Vec<String>,
+        /// Declared primary-key field name.
+        primary_key: String,
+        /// Structured reason the primary key cannot be used.
+        error: PrimaryKeyError,
+    },
+}
+
+/// Reason an indexed-list primary-key declaration is unusable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimaryKeyError {
+    /// The list has no item schema.
+    MissingItems,
+    /// The list item schema is not a dictionary.
+    ItemsNotDict {
+        /// Effective item schema type.
+        found: &'static str,
+    },
+    /// The dictionary item schema does not declare the primary-key field.
+    MissingField,
+    /// The primary-key field is not scalar.
+    FieldNotScalar {
+        /// Effective primary-key field schema type.
+        found: &'static str,
+    },
 }
 
 impl std::fmt::Display for SchemaDiagnostic {
@@ -419,6 +449,30 @@ impl std::fmt::Display for SchemaDiagnostic {
                     schema_path.join("/"),
                     location
                 )
+            }
+            Self::InvalidPrimaryKey {
+                schema_path,
+                primary_key,
+                error,
+            } => write!(
+                f,
+                "Invalid primary key '{primary_key}' on indexed list '{}': {error}",
+                schema_path.join("/")
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for PrimaryKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingItems => write!(f, "the list has no item schema"),
+            Self::ItemsNotDict { found } => {
+                write!(f, "list items must be dictionaries, found {found}")
+            }
+            Self::MissingField => write!(f, "the field is missing from the item schema"),
+            Self::FieldNotScalar { found } => {
+                write!(f, "the field must be scalar, found {found}")
             }
         }
     }
@@ -719,7 +773,7 @@ impl<'a> Compiler<'a> {
             .clone()
             .filter_map(|schema| schema.items.as_deref())
             .collect::<Vec<_>>();
-        Ok(ListSchema {
+        let schema = ListSchema {
             common: common(layers, schema_path)?,
             items: (!item_layers.is_empty())
                 .then(|| {
@@ -743,7 +797,69 @@ impl<'a> Compiler<'a> {
                 .clone()
                 .find_map(|schema| schema.allow_duplicate_primary_key)
                 .unwrap_or_default(),
-        })
+        };
+        self.validate_primary_key(&schema, schema_path)?;
+        Ok(schema)
+    }
+
+    fn validate_primary_key(
+        &self,
+        schema: &ListSchema,
+        schema_path: &[String],
+    ) -> Result<(), CompileError> {
+        let Some(primary_key) = schema.primary_key.as_ref() else {
+            return Ok(());
+        };
+        if schema
+            .common
+            .deprecation
+            .as_ref()
+            .is_some_and(|deprecation| deprecation.removed)
+        {
+            return Ok(());
+        }
+        let item = schema
+            .items
+            .ok_or_else(|| SchemaDiagnostic::InvalidPrimaryKey {
+                schema_path: schema_path.to_vec(),
+                primary_key: primary_key.clone(),
+                error: PrimaryKeyError::MissingItems,
+            })?;
+        let SchemaId::Dict(index) = item else {
+            return Err(SchemaDiagnostic::InvalidPrimaryKey {
+                schema_path: schema_path.to_vec(),
+                primary_key: primary_key.clone(),
+                error: PrimaryKeyError::ItemsNotDict {
+                    found: compiled_schema_type(item),
+                },
+            }
+            .into());
+        };
+        let item_schema = self
+            .output
+            .dicts
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .ok_or_else(|| SchemaDiagnostic::StructuralCycle {
+                schema_path: schema_path.to_vec(),
+            })?;
+        let field = item_schema.keys.get(primary_key).copied().ok_or_else(|| {
+            SchemaDiagnostic::InvalidPrimaryKey {
+                schema_path: schema_path.to_vec(),
+                primary_key: primary_key.clone(),
+                error: PrimaryKeyError::MissingField,
+            }
+        })?;
+        if matches!(field, SchemaId::List(_) | SchemaId::Dict(_)) {
+            return Err(SchemaDiagnostic::InvalidPrimaryKey {
+                schema_path: schema_path.to_vec(),
+                primary_key: primary_key.clone(),
+                error: PrimaryKeyError::FieldNotScalar {
+                    found: compiled_schema_type(field),
+                },
+            }
+            .into());
+        }
+        Ok(())
     }
 
     fn compile_dict(
@@ -1167,6 +1283,16 @@ fn dict_relaxed_validation(layer: SourceLayer<'_>) -> Option<bool> {
     }
 }
 
+fn compiled_schema_type(schema: SchemaId) -> &'static str {
+    match schema {
+        SchemaId::Bool(_) => "bool",
+        SchemaId::Int(_) => "int",
+        SchemaId::Str(_) => "str",
+        SchemaId::List(_) => "list",
+        SchemaId::Dict(_) => "dict",
+    }
+}
+
 fn table_index(length: usize) -> Result<u32, CompileError> {
     u32::try_from(length).map_err(|_conversion_error| CompileError::TableOverflow)
 }
@@ -1178,6 +1304,7 @@ mod tests {
     use super::ArchivedCompiledStore;
     use super::CompileError;
     use super::CompiledStore;
+    use super::PrimaryKeyError;
     use super::SchemaDiagnostic;
     use super::SchemaId;
     #[cfg(feature = "dump_load_files")]
@@ -1294,6 +1421,64 @@ mod tests {
 
         assert_eq!(root.keys.get("first"), root.keys.get("second"));
         assert_eq!(compiled.strings.len(), 1);
+    }
+
+    #[test]
+    fn active_dangling_primary_key_is_rejected_but_removed_tombstone_is_allowed() {
+        let invalid = StoreSource::from_json(
+            r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name"}}}}"#,
+        )
+        .expect("valid source shape");
+        let CompileError::InvalidSchema(diagnostics) =
+            CompiledStore::compile(&invalid).expect_err("active primary key must be usable")
+        else {
+            panic!("invalid primary key should return schema diagnostics")
+        };
+        assert!(matches!(
+            diagnostics.iter().next(),
+            Some(SchemaDiagnostic::InvalidPrimaryKey {
+                schema_path,
+                primary_key,
+                error: PrimaryKeyError::MissingItems,
+            }) if schema_path == &["root", "keys", "values"] && primary_key == "name"
+        ));
+
+        let removed = StoreSource::from_json(
+            r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","deprecation":{"warning":false,"removed":true}}}}}"#,
+        )
+        .expect("valid removed source shape");
+        CompiledStore::compile(&removed).expect("removed tombstone should remain loadable");
+    }
+
+    #[test]
+    fn invalid_primary_key_target_diagnostics_are_precise() {
+        let cases = [
+            (
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"str"}}}}}"#,
+                PrimaryKeyError::ItemsNotDict { found: "str" },
+            ),
+            (
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"other":{"type":"str"}}}}}}}"#,
+                PrimaryKeyError::MissingField,
+            ),
+            (
+                r#"{"root":{"type":"dict","keys":{"values":{"type":"list","primary_key":"name","items":{"type":"dict","keys":{"name":{"type":"dict"}}}}}}}"#,
+                PrimaryKeyError::FieldNotScalar { found: "dict" },
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let source = StoreSource::from_json(source).expect("valid source shape");
+            let CompileError::InvalidSchema(diagnostics) =
+                CompiledStore::compile(&source).expect_err("primary key target must be usable")
+            else {
+                panic!("invalid primary key should return schema diagnostics")
+            };
+            assert!(matches!(
+                diagnostics.iter().next(),
+                Some(SchemaDiagnostic::InvalidPrimaryKey { error, .. }) if *error == expected
+            ));
+        }
     }
 
     #[test]

@@ -59,6 +59,38 @@ impl<'a> SchemaCursor<'a> {
     }
 }
 
+impl Store {
+    /// Borrow a generated schema node by its table identity.
+    ///
+    /// IDs belong to one exact compiled store. Callers must verify the schema fingerprint before
+    /// interpreting generated IDs; an out-of-range identity returns `None`.
+    pub fn schema(&self, id: SchemaId) -> Option<SchemaView<'_>> {
+        let present = match id {
+            SchemaId::Bool(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.archived().bools.get(index))
+                .is_some(),
+            SchemaId::Int(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.archived().ints.get(index))
+                .is_some(),
+            SchemaId::Str(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.archived().strings.get(index))
+                .is_some(),
+            SchemaId::List(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.archived().lists.get(index))
+                .is_some(),
+            SchemaId::Dict(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.archived().dicts.get(index))
+                .is_some(),
+        };
+        present.then(|| SchemaCursor { store: self, id }.view())
+    }
+}
+
 /// Typed borrowed view of one schema node in a compiled store.
 #[derive(Clone, Copy, Debug)]
 pub enum SchemaView<'a> {
@@ -196,6 +228,21 @@ pub enum SchemaValueView<'a> {
 pub struct SchemaListValueView<'a>(&'a rkyv::vec::ArchivedVec<ArchivedCompiledValue>);
 
 impl<'a> SchemaListValueView<'a> {
+    /// Number of values in the archived default.
+    pub fn len(self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the archived default list is empty.
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Borrow one default item by position without walking preceding values.
+    pub fn get(self, index: usize) -> Option<SchemaValueView<'a>> {
+        self.0.get(index).map(SchemaValueView::from)
+    }
+
     /// Iterate over the list values without allocating owned values.
     pub fn iter(self) -> impl Iterator<Item = SchemaValueView<'a>> {
         self.0.iter().map(SchemaValueView::from)
@@ -211,6 +258,12 @@ pub struct SchemaObjectValueView<'a>(
 );
 
 impl<'a> SchemaObjectValueView<'a> {
+    /// Borrow one object entry without materializing its key or value.
+    pub fn get(self, key: &str) -> Option<SchemaValueView<'a>> {
+        self.iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value)
+    }
     /// Iterate over borrowed key-value pairs without allocating owned values.
     pub fn iter(self) -> impl Iterator<Item = (&'a str, SchemaValueView<'a>)> {
         self.0

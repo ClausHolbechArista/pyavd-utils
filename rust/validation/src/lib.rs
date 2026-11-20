@@ -19,6 +19,8 @@
     reason = "Existing validation models and tests predate workspace lint inheritance"
 )]
 #![deny(unused_crate_dependencies)]
+#[cfg(feature = "archive")]
+pub mod archive;
 
 mod context;
 pub mod feedback;

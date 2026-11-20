@@ -12,6 +12,7 @@ use avdschema::StoreSource;
 use avdschema::generate_markdown_documentation;
 use avdschema::generate_python_models;
 use avdschema::generate_python_models_projection;
+use avdschema::nominal_model_ir_with_reused_schemas_json;
 use pyo3::PyResult;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -21,6 +22,31 @@ use pyo3::pyfunction;
 #[pyo3::pymodule]
 pub(crate) mod _schema_generation {
     use super::*;
+
+    /// Return the reference-aware nominal registry used by typed-view artifact renderers.
+    #[pyfunction]
+    #[pyo3(signature = (source, schema_name, reused_schema_names=None))]
+    pub(crate) fn build_nominal_model_registry(
+        source: PathBuf,
+        schema_name: &str,
+        reused_schema_names: Option<Vec<String>>,
+    ) -> PyResult<String> {
+        let store = StoreSource::from_file(Some(&source)).map_err(|err| {
+            PyRuntimeError::new_err(format!(
+                "Error while loading the Schema Store from file: {err}"
+            ))
+        })?;
+        nominal_model_ir_with_reused_schemas_json(
+            &store,
+            schema_name,
+            reused_schema_names.as_deref().unwrap_or_default(),
+        )
+        .map_err(|err| {
+            PyRuntimeError::new_err(format!(
+                "Error while building the nominal model registry: {err}"
+            ))
+        })
+    }
 
     #[pyfunction]
     #[pyo3(signature = (source, schema_name, destination, generated_class_name=None, root_keys=None))]
